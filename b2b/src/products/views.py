@@ -2,13 +2,21 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
+
 from .models import Product
 from .serializers import ProductSerializer
 
 
 class ProductListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
-        serializer = ProductSerializer(data=request.data)
+        data = request.data.copy()
+        data['seller_id'] = request.user.id
+
+        serializer = ProductSerializer(data=data)
 
         if serializer.is_valid():
             product = serializer.save()
@@ -28,6 +36,8 @@ class ProductListCreateView(APIView):
 
 
 class ProductDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get_object(self, product_id):
         try:
             return Product.objects.prefetch_related(
@@ -37,6 +47,10 @@ class ProductDetailView(APIView):
         except Product.DoesNotExist:
             return None
 
+    def _check_owner(self, product, user_id):
+        if product.seller_id != user_id:
+            raise PermissionDenied("У вас нет прав на изменение этого товара")
+        
     def get(self, request, product_id):
         product = self.get_object(product_id)
 
@@ -52,7 +66,7 @@ class ProductDetailView(APIView):
         serializer = ProductSerializer(product)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    def put(self, request, product_id):
+    def patch(self, request, product_id):
         product = self.get_object(product_id)
 
         if product is None:
@@ -63,7 +77,8 @@ class ProductDetailView(APIView):
                 },
                 status=status.HTTP_404_NOT_FOUND
             )
-
+        self._check_owner(product, request.user.id)
+        
         serializer = ProductSerializer(product, data=request.data, partial=True)
 
         if serializer.is_valid():
@@ -81,3 +96,18 @@ class ProductDetailView(APIView):
             },
             status=status.HTTP_400_BAD_REQUEST
         )
+    
+    def delete(self, request, product_id):
+        product = self.get_object(product_id)
+
+        if product is None:
+            return Response(
+                {
+                    "code": "PRODUCT_NOT_FOUND",
+                    "message": "Товар не найден",
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+        self._check_owner(product, request.user.id)
+        product.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
