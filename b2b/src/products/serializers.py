@@ -25,7 +25,6 @@ class ProductSerializer(serializers.ModelSerializer):
     characteristics = CharacteristicSerializer(many=True, required=False)
     category = CategorySerializer(read_only=True)
     category_id = serializers.UUIDField(write_only=True, required=True)
-    seller_id = serializers.IntegerField(write_only=True, required=False)
 
     class Meta:
         model = Product
@@ -36,7 +35,6 @@ class ProductSerializer(serializers.ModelSerializer):
             "status",
             "category",
             "category_id",
-            "seller_id",
             "images",
             "characteristics",
             "created_at",

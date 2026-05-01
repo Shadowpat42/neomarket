@@ -18,7 +18,7 @@ class Category(models.Model):
     
 class Product(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    seller_id = models.IntegerField(help_text="ID продавца из сервиса авторизации")#потом поменять на uuid
+    seller_id = models.UUIDField(help_text="ID продавца из сервиса авторизации")
     category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name='products')
 
     title = models.CharField(max_length=255)

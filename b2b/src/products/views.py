@@ -14,11 +14,11 @@ class ProductListCreateView(APIView):
 
     def post(self, request):
         data = request.data.copy()
-        data['seller_id'] = request.user.id
 
         serializer = ProductSerializer(data=data)
 
         if serializer.is_valid():
+            serializer.validated_data['seller_id'] = request.user.id
             product = serializer.save()
             return Response(
                 ProductSerializer(product).data,
@@ -111,3 +111,11 @@ class ProductDetailView(APIView):
         self._check_owner(product, request.user.id)
         product.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+    
+class ProductListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        products = Product.objects.filter(seller_id=request.user.id)
+        serializer = ProductSerializer(products, many=True)
+        return Response(serializer.data)
