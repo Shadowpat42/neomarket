@@ -1,5 +1,6 @@
 from rest_framework import serializers
-from .models import Product, Image, Characteristic, Category    
+from .models import Product, Image, Characteristic, Category
+from skus.serializers import SKUSerializer
 
 
 class ImageSerializer(serializers.ModelSerializer):
@@ -15,9 +16,26 @@ class CharacteristicSerializer(serializers.ModelSerializer):
 
 
 class CategorySerializer(serializers.ModelSerializer):
+    parent_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
+
     class Meta:
         model = Category
-        fields = ["id", "name"]
+        fields = ["id", "name", "parent", "parent_id", "created_at"]
+        read_only_fields = ["id", "parent", "created_at"]
+
+    def create(self, validated_data):
+        parent_id = validated_data.pop("parent_id", None)
+
+        parent = None
+        if parent_id:
+            try:
+                parent = Category.objects.get(id=parent_id)
+            except Category.DoesNotExist:
+                raise serializers.ValidationError(
+                    {"parent_id": "Родительская категория не найдена"}
+                )
+
+        return Category.objects.create(parent=parent, **validated_data)
 
 
 class ProductSerializer(serializers.ModelSerializer):
@@ -25,6 +43,7 @@ class ProductSerializer(serializers.ModelSerializer):
     characteristics = CharacteristicSerializer(many=True, required=False)
     category = CategorySerializer(read_only=True)
     category_id = serializers.UUIDField(write_only=True, required=True)
+    skus = SKUSerializer(many=True, read_only=True)
 
     class Meta:
         model = Product
@@ -39,6 +58,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "characteristics",
             "created_at",
             "updated_at",
+            "skus",
         ]
         read_only_fields = ["id", "status", "created_at", "updated_at"]
 
