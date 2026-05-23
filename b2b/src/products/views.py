@@ -13,23 +13,23 @@ class ProductListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        data = request.data.copy()
-
-        serializer = ProductSerializer(data=data)
+        serializer = ProductSerializer(data=request.data)
 
         if serializer.is_valid():
-            serializer.validated_data['seller_id'] = request.user.id
-            product = serializer.save()
+            product = serializer.save(
+                seller_id=request.user.id
+            )
             return Response(
                 ProductSerializer(product).data,
                 status=status.HTTP_201_CREATED
             )
 
+        first_error = next(iter(serializer.errors.values()))[0]
+
         return Response(
             {
-                "code": "INVALID_PRODUCT_DATA",
-                "message": "Некорректные данные товара",
-                "errors": serializer.errors,
+                "code": "INVALID_REQUEST",
+                "message": str(first_error),
             },
             status=status.HTTP_400_BAD_REQUEST
         )

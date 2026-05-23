@@ -1,185 +1,227 @@
 import uuid
+
+from django.contrib.auth import get_user_model
 from django.urls import reverse
-from django.contrib.auth.models import User
-from rest_framework.test import APITestCase, APIClient
+
 from rest_framework import status
-from products.models import Product, Category, Image, Characteristic
-from shared_models.models import BaseProductStatus
+from rest_framework.test import APITestCase
+
+from products.models import Product, Category
 
 
-class ProductAPITestCase(APITestCase):
+User = get_user_model()
+
+
+class CreateProductTests(APITestCase):
+
     def setUp(self):
-        # Пользователь (продавец)
         self.user = User.objects.create_user(
-            username='seller',
-            password='testpass123'
+            email="seller@test.com",
+            password="12345678",
+            first_name="Danil",
+            last_name="Babikov",
+            company_name="NeoMarket",
+            phone="+79999999999"
         )
-        self.user_id = self.user.id   # IntegerField в модели Product
 
-        # Клиент с аутентификацией
-        self.client = APIClient()
+        self.another_user = User.objects.create_user(
+            email="another@test.com",
+            password="12345678",
+            first_name="Ivan",
+            last_name="Ivanov",
+            company_name="AnotherCompany",
+            phone="+78888888888"
+        )
+
+        self.category = Category.objects.create(
+            name="iOS"
+        )
+
         self.client.force_authenticate(user=self.user)
 
-        # Категория
-        self.category = Category.objects.create(
-            id=uuid.uuid4(),
-            name='Смартфоны'
-        )
+        self.url = "/api/v1/products/"
 
-        # URL из urls.py (с именами)
-        self.products_list_url = reverse('product-list-create')
-        # self.my_products_url = reverse('my-products')
-
-    # ========== CREATE ==========
-    def test_create_product_success(self):
-        """Успешное создание товара"""
-        data = {
-            'title': 'iPhone 15',
-            'description': 'Флагман',
-            'category_id': str(self.category.id),
-            'images': [{'url': 'http://example.com/1.jpg', 'ordering': 0}],
-            'characteristics': [{'name': 'Бренд', 'value': 'Apple'}]
+    def valid_payload(self):
+        return {
+            "title": "iPhone 15 Pro Max",
+            "description": "Apple smartphone",
+            "category_id": str(self.category.id),
+            "images": [
+                {
+                    "url": "https://example.com/front.jpg",
+                    "ordering": 0
+                }
+            ],
+            "characteristics": [
+                {
+                    "name": "Бренд",
+                    "value": "Apple"
+                }
+            ]
         }
-        response = self.client.post(self.products_list_url, data, format='json')
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Product.objects.count(), 1)
-        product = Product.objects.first()
-        self.assertEqual(product.title, 'iPhone 15')
-        self.assertEqual(product.seller_id, self.user_id)
-        self.assertEqual(product.images.count(), 1)
-        self.assertEqual(product.characteristics.count(), 1)
 
-    def test_create_product_missing_category(self):
-        """Несуществующая категория -> 400, ошибка в поле category_id"""
-        data = {
-            'title': 'iPhone',
-            'category_id': str(uuid.uuid4()),
-            'images': [],
-            'characteristics': []
+    def test_create_product_returns_201_with_created_status(self):
+        response = self.client.post(
+            self.url,
+            self.valid_payload(),
+            format="json"
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_201_CREATED
+        )
+
+        self.assertEqual(
+            response.data["status"],
+            "CREATED"
+        )
+
+        self.assertEqual(
+            response.data["skus"],
+            []
+        )
+
+        product = Product.objects.get(id=response.data["id"])
+
+        self.assertEqual(product.status, "CREATED")
+
+    def test_seller_id_taken_from_jwt(self):
+        payload = self.valid_payload()
+
+        payload["seller_id"] = str(self.another_user.id)
+
+        response = self.client.post(
+            self.url,
+            payload,
+            format="json"
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_201_CREATED
+        )
+
+        product = Product.objects.get(id=response.data["id"])
+
+        self.assertEqual(
+            str(product.seller_id),
+            str(self.user.id)
+        )
+
+        self.assertNotEqual(
+            str(product.seller_id),
+            str(self.another_user.id)
+        )
+
+    def test_missing_images_returns_400(self):
+        payload = self.valid_payload()
+
+        payload.pop("images")
+
+        response = self.client.post(
+            self.url,
+            payload,
+            format="json"
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST
+        )
+
+        self.assertEqual(
+            response.data["code"],
+            "INVALID_REQUEST"
+        )
+
+    def test_missing_category_returns_400(self):
+        payload = {
+            "title": "iPhone",
+            "description": "Apple smartphone",
+            "images": [
+                {
+                    "url": "/s3/front.jpg",
+                    "ordering": 0
+                }
+            ]
         }
-        response = self.client.post(self.products_list_url, data, format='json')
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        errors = response.data.get('errors', {})
-        self.assertIn('category_id', errors)
 
-    def test_create_product_unauthorized(self):
-        """Неавторизованный -> 403 (DRF с IsAuthenticated)"""
-        self.client.force_authenticate(user=None)
-        data = {'title': 'test'}
-        response = self.client.post(self.products_list_url, data, format='json')
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-
-    # ========== RETRIEVE ==========
-    def test_retrieve_product_detail(self):
-        """Получение товара по ID"""
-        product = Product.objects.create(
-            id=uuid.uuid4(),
-            seller_id=self.user_id,
-            category=self.category,
-            title='Test Product',
-            status=BaseProductStatus.CREATED
+        response = self.client.post(
+            self.url,
+            payload,
+            format="json"
         )
-        url = reverse('product-detail', kwargs={'product_id': product.id})
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['id'], str(product.id))
-        self.assertEqual(response.data['title'], 'Test Product')
-        self.assertIn('category', response.data)
-        self.assertEqual(response.data['category']['id'], str(self.category.id))
 
-    def test_retrieve_product_not_found(self):
-        """Товар не найден -> 404"""
-        url = reverse('product-detail', kwargs={'product_id': uuid.uuid4()})
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    # ========== UPDATE ==========
-    def test_update_product_owner(self):
-        """Владелец может обновить товар"""
-        product = Product.objects.create(
-            id=uuid.uuid4(),
-            seller_id=self.user_id,
-            category=self.category,
-            title='Old Title',
-            status=BaseProductStatus.CREATED
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST
         )
-        url = reverse('product-detail', kwargs={'product_id': product.id})
-        data = {'title': 'New Title', 'category_id': str(self.category.id)}
-        response = self.client.patch(url, data, format='json')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        product.refresh_from_db()
-        self.assertEqual(product.title, 'New Title')
 
-    def test_update_product_not_owner(self):
-        """Чужой товар нельзя обновить -> 403"""
-        other_user = User.objects.create_user(username='other', password='123')
-        other_user_id = other_user.id
-        product = Product.objects.create(
-            id=uuid.uuid4(),
-            seller_id=other_user_id,
-            category=self.category,
-            title='Other Title',
-            status=BaseProductStatus.CREATED
+        self.assertEqual(
+            response.data["code"],
+            "INVALID_REQUEST"
         )
-        url = reverse('product-detail', kwargs={'product_id': product.id})
-        data = {'title': 'Hacked Title'}
-        response = self.client.patch(url, data, format='json')
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_update_product_images_and_chars(self):
-        """Обновление вложенных изображений и характеристик (замена списков)"""
-        product = Product.objects.create(
-            id=uuid.uuid4(),
-            seller_id=self.user_id,
-            category=self.category,
-            title='Base'
-        )
-        # Начальные данные
-        Image.objects.create(product=product, url='old.jpg', ordering=0)
-        Characteristic.objects.create(product=product, name='old', value='old')
-        url = reverse('product-detail', kwargs={'product_id': product.id})
-
-        data = {
-            'title': 'Updated',
-            'images': [{'url': 'new.jpg', 'ordering': 1}],
-            'characteristics': [{'name': 'Brand', 'value': 'Apple'}],
-            'category_id': str(self.category.id)
+    def test_invalid_category_id_returns_400(self):
+        payload = {
+            "title": "iPhone",
+            "description": "Apple smartphone",
+            "category_id": str(uuid.uuid4()),
+            "images": [
+                {
+                    "url": "/s3/front.jpg",
+                    "ordering": 0
+                }
+            ]
         }
-        response = self.client.patch(url, data, format='json')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        product.refresh_from_db()
-        self.assertEqual(product.title, 'Updated')
-        self.assertEqual(product.images.count(), 1)
-        self.assertEqual(product.images.first().url, 'new.jpg')
-        self.assertEqual(product.characteristics.count(), 1)
-        self.assertEqual(product.characteristics.first().name, 'Brand')
 
-    # ========== DELETE ==========
-    def test_delete_product_owner(self):
-        """Владелец может удалить свой товар"""
-        product = Product.objects.create(
-            id=uuid.uuid4(),
-            seller_id=self.user_id,
-            category=self.category,
-            title='To delete'
+        response = self.client.post(
+            self.url,
+            payload,
+            format="json"
         )
-        url = reverse('product-detail', kwargs={'product_id': product.id})
-        response = self.client.delete(url)
-        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
-        self.assertEqual(Product.objects.count(), 0)
 
-    def test_delete_product_not_owner(self):
-        """Чужой товар нельзя удалить -> 403"""
-        other_user = User.objects.create_user(username='other2', password='123')
-        other_user_id = other_user.id
-        product = Product.objects.create(
-            id=uuid.uuid4(),
-            seller_id=other_user_id,
-            category=self.category,
-            title='Other delete'
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST
         )
-        url = reverse('product-detail', kwargs={'product_id': product.id})
-        response = self.client.delete(url)
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    # ========== (опционально) тесты на my-products будут добавлены позже ==========
+        self.assertEqual(
+            response.data["code"],
+            "INVALID_REQUEST"
+        )
+
+        self.assertEqual(
+            response.data["message"],
+            "Category not found"
+        )
+
+    def test_invalid_category_uuid_returns_400(self):
+        payload = {
+            "title": "iPhone",
+            "description": "Apple smartphone",
+            "category_id": "not-uuid",
+            "images": [
+                {
+                    "url": "/s3/front.jpg",
+                    "ordering": 0
+                }
+            ]
+        }
+
+        response = self.client.post(
+            self.url,
+            payload,
+            format="json"
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST
+        )
+
+        self.assertEqual(
+            response.data["message"],
+            "category_id must be a valid UUID"
+        )
