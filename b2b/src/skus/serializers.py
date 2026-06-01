@@ -28,29 +28,36 @@ class SKUSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "product_id",
-            "product",
             "name",
             "price",
-            "stock_quantity",
+            "discount",
+            "cost_price",
+            "active_quantity",
+            "reserved_quantity",
             "article",
             "images",
             "characteristics",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "product", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "reserved_quantity",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_product_id(self, value):
+        if not Product.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Product not found")
+        return value
 
     def create(self, validated_data):
         images_data = validated_data.pop("images", [])
         characteristics_data = validated_data.pop("characteristics", [])
         product_id = validated_data.pop("product_id")
 
-        try:
-            product = Product.objects.get(id=product_id)
-        except Product.DoesNotExist:
-            raise serializers.ValidationError(
-                {"product_id": "Товар с таким ID не существует"}
-            )
+        product = Product.objects.get(id=product_id)
 
         sku = SKU.objects.create(product=product, **validated_data)
 
@@ -88,7 +95,14 @@ class SKUSerializer(serializers.ModelSerializer):
 class SKUUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = SKU
-        fields = ["name", "price", "article"]
+        fields = [
+            "name",
+            "price",
+            "discount",
+            "cost_price",
+            "active_quantity",
+            "article",
+        ]
 
 
 class SKUImageUpdateSerializer(serializers.ModelSerializer):

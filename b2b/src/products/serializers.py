@@ -1,18 +1,22 @@
+from django.utils.text import slugify
 from rest_framework import serializers
-from .models import Product, Image, Characteristic, Category, BaseProductStatus
+
+from .models import Product, Image, Characteristic, Category
 from skus.serializers import SKUSerializer
 
 
 class ImageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Image
-        fields = ["url", "ordering"]
+        fields = ["id", "url", "ordering"]
+        read_only_fields = ["id"]
 
 
 class CharacteristicSerializer(serializers.ModelSerializer):
     class Meta:
         model = Characteristic
-        fields = ["name", "value"]
+        fields = ["id", "name", "value"]
+        read_only_fields = ["id"]
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -39,87 +43,86 @@ class CategorySerializer(serializers.ModelSerializer):
 
 
 class ProductSerializer(serializers.ModelSerializer):
-    description = serializers.CharField(required=True,min_length=1,max_length=5000)
     images = ImageSerializer(many=True, required=True)
     characteristics = CharacteristicSerializer(many=True, required=False)
-    category = CategorySerializer(read_only=True)
-    category_id = serializers.UUIDField(write_only=True,error_messages={"invalid": "category_id must be a valid UUID"})
     skus = SKUSerializer(many=True, read_only=True)
+
+    category_id = serializers.UUIDField(
+        write_only=True,
+        required=True,
+        error_messages={
+            "invalid": "category_id must be a valid UUID"
+        }
+    )
 
     class Meta:
         model = Product
         fields = [
             "id",
+            "seller_id",
+            "slug",
             "title",
             "description",
             "status",
-            "category",
+            "deleted",
+            "blocking_reason_id",
+            "moderator_comment",
             "category_id",
             "images",
             "characteristics",
+            "skus",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "seller_id",
+            "slug",
+            "status",
+            "deleted",
+            "blocking_reason_id",
+            "moderator_comment",
             "created_at",
             "updated_at",
             "skus",
         ]
-        read_only_fields = [
-            "id",
-            "status",
-            "created_at",
-            "updated_at",
-        ]
-    
-    def validate_title(self, value):
-        if not value or not value.strip():
-            raise serializers.ValidationError("title is required")
-
-        if len(value) > 255:
-            raise serializers.ValidationError(
-                "title must be 1-255 characters"
-            )
-
-        return value
 
     def validate_images(self, value):
-        if not value or len(value) == 0:
-            raise serializers.ValidationError(
-                "At least one image is required"
-            )
-
+        if not value:
+            raise serializers.ValidationError("At least one image is required")
         return value
 
     def validate_category_id(self, value):
         if not Category.objects.filter(id=value).exists():
-            raise serializers.ValidationError(
-                "Category not found"
-            )
-
+            raise serializers.ValidationError("Category not found")
         return value
 
     def create(self, validated_data):
         images_data = validated_data.pop("images")
-        characteristics_data = validated_data.pop(
-            "characteristics",
-            []
-        )
-
+        characteristics_data = validated_data.pop("characteristics", [])
         category_id = validated_data.pop("category_id")
+
         category = Category.objects.get(id=category_id)
+
+        base_slug = slugify(validated_data.get("title", "")) or "product"
+        slug = base_slug
+        counter = 1
+
+        while Product.objects.filter(slug=slug).exists():
+            counter += 1
+            slug = f"{base_slug}-{counter}"
 
         product = Product.objects.create(
             category=category,
-            status=BaseProductStatus.CREATED,
-            **validated_data
+            slug=slug,
+            **validated_data,
         )
 
-        Image.objects.bulk_create([
-            Image(product=product, **image_data)
-            for image_data in images_data
-        ])
+        for image_data in images_data:
+            Image.objects.create(product=product, **image_data)
 
-        Characteristic.objects.bulk_create([
-            Characteristic(product=product, **char_data)
-            for char_data in characteristics_data
-        ])
+        for characteristic_data in characteristics_data:
+            Characteristic.objects.create(product=product, **characteristic_data)
 
         return product
 
@@ -130,14 +133,13 @@ class ProductSerializer(serializers.ModelSerializer):
 
         if category_id:
             try:
-                category = Category.objects.get(id=category_id)
-                instance.category = category
+                instance.category = Category.objects.get(id=category_id)
             except Category.DoesNotExist:
                 raise serializers.ValidationError({"category_id": "Category not found"})
-            
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
+
         instance.save()
 
         if images_data is not None:

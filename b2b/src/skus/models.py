@@ -6,14 +6,17 @@ from shared_models.models import BaseImage, BaseCharacteristic
 
 
 class SKU(models.Model):
-    """Конкретный вариант товара: цвет, память, размер и т.п."""
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="skus")
 
     name = models.CharField(max_length=255)
     price = models.PositiveIntegerField()
-    stock_quantity = models.PositiveIntegerField(default=0)
+    discount = models.PositiveIntegerField(default=0)
+    cost_price = models.PositiveIntegerField(default=0)
+
+    active_quantity = models.PositiveIntegerField(default=0)
+    reserved_quantity = models.PositiveIntegerField(default=0)
+
     article = models.CharField(max_length=255, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -28,8 +31,6 @@ class SKU(models.Model):
 
 
 class SKUImage(BaseImage):
-    """Изображение конкретного SKU."""
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     sku = models.ForeignKey(SKU, on_delete=models.CASCADE, related_name="images")
 
@@ -39,8 +40,6 @@ class SKUImage(BaseImage):
 
 
 class SKUCharacteristic(BaseCharacteristic):
-    """Характеристика конкретного SKU."""
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     sku = models.ForeignKey(SKU, on_delete=models.CASCADE, related_name="characteristics")
 
