@@ -17,6 +17,28 @@ class SKUCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        product_id = request.data.get("product_id")
+
+        product = Product.objects.filter(id=product_id).first()
+
+        if product is None:
+            return Response(
+                {
+                    "code": "PRODUCT_NOT_FOUND",
+                    "message": "Товар не найден",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if product.seller_id != request.user.id:
+            return Response(
+                {
+                    "code": "FORBIDDEN",
+                    "message": "Нет прав на создание SKU для этого товара",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         serializer = SKUSerializer(data=request.data)
 
         if serializer.is_valid():
@@ -27,7 +49,7 @@ class SKUCreateView(APIView):
             {
                 "code": "INVALID_SKU_DATA",
                 "message": "Некорректные данные SKU",
-                "errors": serializer.errors,
+                "details": serializer.errors,
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
@@ -71,6 +93,15 @@ class SKUDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        if sku.product.seller_id != request.user.id:
+            return Response(
+                {
+                    "code": "FORBIDDEN",
+                    "message": "Нет прав на изменение этого SKU",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         serializer = SKUUpdateSerializer(sku, data=request.data, partial=True)
 
         if serializer.is_valid():
@@ -81,7 +112,7 @@ class SKUDetailView(APIView):
             {
                 "code": "INVALID_SKU_DATA",
                 "message": "Некорректные данные SKU",
-                "errors": serializer.errors,
+                "details": serializer.errors,
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
@@ -98,6 +129,15 @@ class SKUDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        if sku.product.seller_id != request.user.id:
+            return Response(
+                {
+                    "code": "FORBIDDEN",
+                    "message": "Нет прав на удаление этого SKU",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         sku.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -106,9 +146,9 @@ class SKUByProductView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, product_id):
-        try:
-            Product.objects.get(id=product_id)
-        except Product.DoesNotExist:
+        product = Product.objects.filter(id=product_id).first()
+
+        if product is None:
             return Response(
                 {
                     "code": "PRODUCT_NOT_FOUND",
@@ -117,7 +157,7 @@ class SKUByProductView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        skus = SKU.objects.filter(product_id=product_id).prefetch_related(
+        skus = SKU.objects.filter(product=product).prefetch_related(
             "images",
             "characteristics",
         )
@@ -129,15 +169,24 @@ class SKUImageCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, sku_id):
-        try:
-            sku = SKU.objects.get(id=sku_id)
-        except SKU.DoesNotExist:
+        sku = SKU.objects.select_related("product").filter(id=sku_id).first()
+
+        if sku is None:
             return Response(
                 {
                     "code": "SKU_NOT_FOUND",
                     "message": "SKU не найден",
                 },
                 status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if sku.product.seller_id != request.user.id:
+            return Response(
+                {
+                    "code": "FORBIDDEN",
+                    "message": "Нет прав на добавление изображения к этому SKU",
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         serializer = SKUImageSerializer(data=request.data)
@@ -150,7 +199,7 @@ class SKUImageCreateView(APIView):
             {
                 "code": "INVALID_SKU_IMAGE_DATA",
                 "message": "Некорректные данные изображения SKU",
-                "errors": serializer.errors,
+                "details": serializer.errors,
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
@@ -161,7 +210,7 @@ class SKUImageDetailView(APIView):
 
     def get_object(self, image_id):
         try:
-            return SKUImage.objects.get(id=image_id)
+            return SKUImage.objects.select_related("sku__product").get(id=image_id)
         except SKUImage.DoesNotExist:
             return None
 
@@ -177,6 +226,15 @@ class SKUImageDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        if image.sku.product.seller_id != request.user.id:
+            return Response(
+                {
+                    "code": "FORBIDDEN",
+                    "message": "Нет прав на изменение изображения этого SKU",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         serializer = SKUImageUpdateSerializer(image, data=request.data, partial=True)
 
         if serializer.is_valid():
@@ -187,7 +245,7 @@ class SKUImageDetailView(APIView):
             {
                 "code": "INVALID_SKU_IMAGE_DATA",
                 "message": "Некорректные данные изображения SKU",
-                "errors": serializer.errors,
+                "details": serializer.errors,
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
@@ -202,6 +260,15 @@ class SKUImageDetailView(APIView):
                     "message": "Изображение SKU не найдено",
                 },
                 status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if image.sku.product.seller_id != request.user.id:
+            return Response(
+                {
+                    "code": "FORBIDDEN",
+                    "message": "Нет прав на удаление изображения этого SKU",
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         image.delete()
