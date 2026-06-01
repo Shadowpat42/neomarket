@@ -1,0 +1,164 @@
+openapi: 3.0.3
+info:
+  title: NeoMarket B2B API
+  version: 1.0.0
+  description: Кабинет продавца — товары, SKU, категории
+
+paths:
+  /api/v1/products:
+    post:
+      operationId: createProduct
+      summary: Создание карточки товара
+      description: |
+        Создаёт товар в статусе CREATED без SKU.
+        seller_id берётся из JWT (claim user_id), не из тела запроса.
+      tags:
+        - Products
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductRequest'
+      responses:
+        '201':
+          description: Товар создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Не авторизован
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    CreateProductRequest:
+      type: object
+      required:
+        - title
+        - description
+        - category_id
+        - images
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          minLength: 1
+          maxLength: 5000
+        category_id:
+          type: string
+          format: uuid
+        images:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ProductImageInput'
+        characteristics:
+          type: array
+          items:
+            $ref: '#/components/schemas/CharacteristicInput'
+
+    ProductImageInput:
+      type: object
+      required:
+        - url
+        - ordering
+      properties:
+        url:
+          type: string
+          format: uri
+        ordering:
+          type: integer
+          minimum: 0
+
+    CharacteristicInput:
+      type: object
+      required:
+        - name
+        - value
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        value:
+          type: string
+          maxLength: 255
+
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [CREATED, ON_MODERATION, MODERATED, BLOCKED]
+        category:
+          $ref: '#/components/schemas/Category'
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductImageInput'
+        characteristics:
+          type: array
+          items:
+            $ref: '#/components/schemas/CharacteristicInput'
+        skus:
+          type: array
+          items: {}
+          description: Пустой массив при создании
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Category:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        parent:
+          type: string
+          format: uuid
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: INVALID_REQUEST
+        message:
+          type: string
