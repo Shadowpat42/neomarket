@@ -13,7 +13,10 @@ class SKU(models.Model):
 
     name = models.CharField(max_length=255)
     price = models.PositiveIntegerField()
+    discount = models.PositiveIntegerField(default=0)
+    cost_price = models.PositiveIntegerField(null=True, blank=True)
     stock_quantity = models.PositiveIntegerField(default=0)
+    reserved_quantity = models.PositiveIntegerField(default=0)
     article = models.CharField(max_length=255, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
