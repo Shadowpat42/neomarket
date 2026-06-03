@@ -6,6 +6,8 @@ from .views import (
     SKUByProductView,
     SKUImageCreateView,
     SKUImageDetailView,
+    ReserveView,
+    UnreserveView,
 )
 
 urlpatterns = [
@@ -15,4 +17,8 @@ urlpatterns = [
     path("api/skus/by-product/<uuid:product_id>", SKUByProductView.as_view(), name="sku-by-product"),
     path("api/skus/<uuid:sku_id>/images", SKUImageCreateView.as_view(), name="sku-image-create"),
     path("api/skus/images/<uuid:image_id>", SKUImageDetailView.as_view(), name="sku-image-detail"),
+
+    # Inventory (B2C service-to-service)
+    path("api/v1/inventory/reserve", ReserveView.as_view(), name="inventory-reserve"),
+    path("api/v1/inventory/unreserve", UnreserveView.as_view(), name="inventory-unreserve"),
 ]
