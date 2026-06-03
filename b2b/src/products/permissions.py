@@ -27,3 +27,17 @@ class IsB2CServiceKey(BasePermission):
     def has_permission(self, request, view):
         service_key = request.headers.get("X-Service-Key")
         return bool(service_key and service_key == settings.B2C_SERVICE_KEY)
+
+
+class IsModerationServiceKey(BasePermission):
+    """
+    Moderation Service → B2B: requires X-Service-Key == B2B_SERVICE_KEY.
+    Bearer JWT is intentionally NOT accepted for this endpoint so that
+    sellers cannot accidentally (or maliciously) call moderation webhooks.
+    """
+
+    message = "Valid X-Service-Key required."
+
+    def has_permission(self, request, view):
+        service_key = request.headers.get("X-Service-Key")
+        return bool(service_key and service_key == settings.B2B_SERVICE_KEY)

@@ -45,3 +45,29 @@ def notify_sku_out_of_stock(*, sku_id: Any, product_id: Any) -> None:
             "product_id": str(product_id),
         },
     )
+
+
+def notify_product_blocked(
+    *,
+    product_id: Any,
+    sku_ids: list[str],
+    idempotency_key: str | None = None,
+) -> None:
+    """
+    Notify B2C that a product has been blocked (soft or hard).
+    B2C uses this to hide the product and all its SKUs from the vitrine.
+    """
+    import uuid as _uuid
+
+    b2c_base_url = os.getenv("B2C_URL", "http://b2c:8002").rstrip("/")
+    endpoint = f"{b2c_base_url}/api/v1/events/product"
+
+    _post(
+        endpoint,
+        {
+            "idempotency_key": idempotency_key or str(_uuid.uuid4()),
+            "event": "PRODUCT_BLOCKED",
+            "product_id": str(product_id),
+            "sku_ids": sku_ids,
+        },
+    )
