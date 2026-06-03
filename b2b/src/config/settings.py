@@ -152,3 +152,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Inter-service auth (Moderation → B2B)
 B2B_SERVICE_KEY = os.getenv("B2B_SERVICE_KEY", "b2b_service_key")
+
+# Inter-service auth (B2C → B2B public catalog)
+B2C_SERVICE_KEY = os.getenv("B2C_SERVICE_KEY", "b2c_service_key")
