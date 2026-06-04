@@ -100,3 +100,21 @@ class ProductFieldReport(models.Model):
 
     def __str__(self):
         return f"{self.product_id}: {self.field_name}"
+
+
+class ProcessedModerationEvent(models.Model):
+    """
+    Idempotency table for POST /api/v1/moderation/events.
+    One row per idempotency_key; prevents duplicate processing of the same
+    moderation decision even if Moderation retries the delivery.
+    """
+
+    idempotency_key = models.UUIDField(primary_key=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Обработанное событие модерации"
+        verbose_name_plural = "Обработанные события модерации"
+
+    def __str__(self):
+        return str(self.idempotency_key)

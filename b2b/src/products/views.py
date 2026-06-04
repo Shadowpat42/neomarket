@@ -1,5 +1,7 @@
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Exists, F, Min, OuterRef, Prefetch, Q, Subquery
+from rest_framework import serializers as drf_serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -8,14 +10,22 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 
 from skus.models import SKU
-from .models import Product, Category
-from .permissions import IsSellerOrServiceKey, IsB2CServiceKey
+from .models import (
+    BlockingReason,
+    ProcessedModerationEvent,
+    Product,
+    ProductFieldReport,
+    Category,
+)
+from .permissions import IsSellerOrServiceKey, IsB2CServiceKey, IsModerationServiceKey
 from .serializers import (
     ProductSerializer,
     CategorySerializer,
     ProductDetailSerializer,
     PublicProductSerializer,
 )
+from shared_models.models import BaseProductStatus
+from b2c_client import notify_product_blocked
 
 
 class ProductListCreateView(APIView):
@@ -76,24 +86,40 @@ class ProductDetailView(APIView):
         serializer = ProductDetailSerializer(product)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    def _hard_blocked_response(self):
+        return Response(
+            {
+                "code": "HARD_BLOCKED",
+                "message": "Товар заблокирован администратором и не может быть изменён",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     def patch(self, request, product_id):
         product = self.get_object(product_id)
 
         if product is None:
             return self._product_not_found_response()
         self._check_owner(product, request.user.id)
-        
+
+        if product.status == BaseProductStatus.HARD_BLOCKED:
+            return self._hard_blocked_response()
+
         serializer = ProductSerializer(product, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         product = serializer.save()
         return Response(ProductSerializer(product).data, status=status.HTTP_200_OK)
-    
+
     def delete(self, request, product_id):
         product = self.get_object(product_id)
 
         if product is None:
             return self._product_not_found_response()
         self._check_owner(product, request.user.id)
+
+        if product.status == BaseProductStatus.HARD_BLOCKED:
+            return self._hard_blocked_response()
+
         product.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
     
@@ -241,3 +267,172 @@ class CategoryDetailView(APIView):
             CategorySerializer(category).data,
             status=status.HTTP_200_OK
         )
+
+
+# ─── Input serializers (only used for validation, not stored) ────────────────
+
+
+class _FieldReportInputSerializer(drf_serializers.Serializer):
+    field_name = drf_serializers.CharField()
+    sku_id = drf_serializers.UUIDField(required=False, allow_null=True)
+    comment = drf_serializers.CharField()
+
+
+class _BlockingReasonInputSerializer(drf_serializers.Serializer):
+    id = drf_serializers.UUIDField()
+    title = drf_serializers.CharField(required=False, default="")
+    comment = drf_serializers.CharField(required=False, default="")
+
+
+class _ModerationEventInputSerializer(drf_serializers.Serializer):
+    idempotency_key = drf_serializers.UUIDField()
+    product_id = drf_serializers.UUIDField()
+    # Accept both OpenAPI name ("event_type") and canon-flow name ("status")
+    event_type = drf_serializers.ChoiceField(
+        choices=["MODERATED", "BLOCKED"], required=False
+    )
+    status = drf_serializers.ChoiceField(
+        choices=["MODERATED", "BLOCKED"], required=False
+    )
+    hard_block = drf_serializers.BooleanField(required=False, default=False)
+    # Full object (canon flow) or just ID (OpenAPI)
+    blocking_reason = _BlockingReasonInputSerializer(required=False, allow_null=True)
+    blocking_reason_id = drf_serializers.UUIDField(required=False, allow_null=True)
+    moderator_comment = drf_serializers.CharField(
+        required=False, allow_null=True, allow_blank=True
+    )
+    field_reports = _FieldReportInputSerializer(many=True, required=False, default=list)
+    occurred_at = drf_serializers.DateTimeField(required=False)
+
+    def validate(self, attrs):
+        event_type = attrs.get("event_type") or attrs.get("status")
+        if not event_type:
+            raise drf_serializers.ValidationError(
+                "event_type (or status) is required"
+            )
+        attrs["_event_type"] = event_type
+        return attrs
+
+
+class ModerationEventView(APIView):
+    """
+    POST /api/v1/moderation/events
+
+    Receives moderation decisions from Moderation Service and applies them:
+    - MODERATED  → status=MODERATED, clear blocking data
+    - BLOCKED (soft) → status=BLOCKED, save field_reports, cascade to B2C
+    - BLOCKED (hard) → status=HARD_BLOCKED, cascade to B2C
+
+    Idempotent: second request with the same idempotency_key returns 204
+    without any side effects.
+    """
+
+    permission_classes = [IsModerationServiceKey]
+
+    def post(self, request):
+        serializer = _ModerationEventInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        event_type = data["_event_type"]
+        hard_block = data.get("hard_block", False)
+
+        send_blocked_event = False
+        product_id_for_b2c = None
+        sku_ids_for_b2c: list[str] = []
+        idempotency_key_for_b2c: str | None = None
+
+        with transaction.atomic():
+            # ── idempotency: insert-first approach inside the transaction ──
+            _, is_new = ProcessedModerationEvent.objects.get_or_create(
+                idempotency_key=data["idempotency_key"]
+            )
+            if not is_new:
+                return Response(status=status.HTTP_204_NO_CONTENT)
+
+            try:
+                product = Product.objects.prefetch_related("skus").get(
+                    id=data["product_id"]
+                )
+            except Product.DoesNotExist:
+                return Response(
+                    {"code": "NOT_FOUND", "message": "Product not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if event_type == "MODERATED":
+                self._apply_moderated(product)
+            else:
+                self._apply_blocked(product, data, hard_block)
+                send_blocked_event = True
+                product_id_for_b2c = product.id
+                sku_ids_for_b2c = [str(s.id) for s in product.skus.all()]
+                idempotency_key_for_b2c = str(data["idempotency_key"])
+
+        # ── best-effort B2C notification (outside transaction) ────────────
+        if send_blocked_event:
+            try:
+                notify_product_blocked(
+                    product_id=product_id_for_b2c,
+                    sku_ids=sku_ids_for_b2c,
+                    idempotency_key=idempotency_key_for_b2c,
+                )
+            except Exception:
+                pass
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _apply_moderated(product: Product) -> None:
+        """Set status=MODERATED and clear all blocking data."""
+        product.status = BaseProductStatus.MODERATED
+        product.blocking_reason_id = None
+        product.moderator_comment = None
+        product.save(update_fields=["status", "blocking_reason_id", "moderator_comment"])
+        product.field_reports.all().delete()
+
+    @staticmethod
+    def _apply_blocked(product: Product, data: dict, hard_block: bool) -> None:
+        """Set status=BLOCKED or HARD_BLOCKED and persist blocking data."""
+        new_status = (
+            BaseProductStatus.HARD_BLOCKED if hard_block else BaseProductStatus.BLOCKED
+        )
+
+        # Resolve blocking_reason_id: prefer the full object, fall back to UUID field
+        blocking_reason_obj = data.get("blocking_reason")
+        blocking_reason_id = None
+        if blocking_reason_obj:
+            br_id = blocking_reason_obj.get("id")
+            br_title = blocking_reason_obj.get("title", "")
+            if br_id:
+                BlockingReason.objects.update_or_create(
+                    id=br_id, defaults={"title": br_title}
+                )
+                blocking_reason_id = br_id
+            # Use comment from inline object if top-level not provided
+            if not data.get("moderator_comment") and blocking_reason_obj.get("comment"):
+                data = dict(data, moderator_comment=blocking_reason_obj["comment"])
+        elif data.get("blocking_reason_id"):
+            blocking_reason_id = data["blocking_reason_id"]
+
+        product.status = new_status
+        product.blocking_reason_id = blocking_reason_id
+        product.moderator_comment = data.get("moderator_comment")
+        product.save(update_fields=["status", "blocking_reason_id", "moderator_comment"])
+
+        # Replace field_reports (delete stale, insert fresh)
+        product.field_reports.all().delete()
+        field_reports = data.get("field_reports") or []
+        if field_reports:
+            ProductFieldReport.objects.bulk_create(
+                [
+                    ProductFieldReport(
+                        product=product,
+                        field_name=fr["field_name"],
+                        sku_id=fr.get("sku_id"),
+                        comment=fr["comment"],
+                    )
+                    for fr in field_reports
+                ]
+            )
