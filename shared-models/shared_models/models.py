@@ -10,6 +10,7 @@ class BaseProductStatus(models.TextChoices):
     ON_MODERATION = 'ON_MODERATION', 'На модерации'
     MODERATED = 'MODERATED', 'Одобрен'
     BLOCKED = 'BLOCKED', 'Заблокирован'
+    HARD_BLOCKED = 'HARD_BLOCKED', 'Жёстко заблокирован'
 
 # ----------------------------------------------------------------------
 # 2. Абстрактные модели

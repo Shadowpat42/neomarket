@@ -22,6 +22,7 @@ class Product(models.Model):
     category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name='products')
 
     title = models.CharField(max_length=255)
+    slug = models.CharField(max_length=255, blank=True, default="")
     description = models.TextField(blank=True)
     status = models.CharField(
         max_length=20,
@@ -29,6 +30,9 @@ class Product(models.Model):
         default=BaseProductStatus.CREATED,
         help_text="Статус модерации"
     )
+    deleted = models.BooleanField(default=False)
+    blocking_reason_id = models.UUIDField(null=True, blank=True)
+    moderator_comment = models.TextField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -42,6 +46,7 @@ class Product(models.Model):
         return self.title
 
 class Image(BaseImage):
+    uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='images')
 
     class Meta:
@@ -52,6 +57,7 @@ class Image(BaseImage):
         return f"{self.product.title} - {self.url}"
 
 class Characteristic(BaseCharacteristic):
+    uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='characteristics')
 
     class Meta:

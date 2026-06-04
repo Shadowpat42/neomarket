@@ -14,25 +14,9 @@ class ProductListCreateView(APIView):
 
     def post(self, request):
         serializer = ProductSerializer(data=request.data)
-
-        if serializer.is_valid():
-            product = serializer.save(
-                seller_id=request.user.id
-            )
-            return Response(
-                ProductSerializer(product).data,
-                status=status.HTTP_201_CREATED
-            )
-
-        first_error = next(iter(serializer.errors.values()))[0]
-
-        return Response(
-            {
-                "code": "INVALID_REQUEST",
-                "message": str(first_error),
-            },
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        serializer.is_valid(raise_exception=True)
+        product = serializer.save(seller_id=request.user.id)
+        return Response(ProductSerializer(product).data, status=status.HTTP_201_CREATED)
 
 
 class ProductDetailView(APIView):
@@ -80,22 +64,9 @@ class ProductDetailView(APIView):
         self._check_owner(product, request.user.id)
         
         serializer = ProductSerializer(product, data=request.data, partial=True)
-
-        if serializer.is_valid():
-            product = serializer.save()
-            return Response(
-                ProductSerializer(product).data,
-                status=status.HTTP_200_OK
-            )
-
-        return Response(
-            {
-                "code": "INVALID_PRODUCT_DATA",
-                "message": "Некорректные данные товара",
-                "errors": serializer.errors,
-            },
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        serializer.is_valid(raise_exception=True)
+        product = serializer.save()
+        return Response(ProductSerializer(product).data, status=status.HTTP_200_OK)
     
     def delete(self, request, product_id):
         product = self.get_object(product_id)
@@ -130,22 +101,9 @@ class CategoryListCreateView(APIView):
 
     def post(self, request):
         serializer = CategorySerializer(data=request.data)
-
-        if serializer.is_valid():
-            category = serializer.save()
-            return Response(
-                CategorySerializer(category).data,
-                status=status.HTTP_201_CREATED
-            )
-
-        return Response(
-            {
-                "code": "INVALID_CATEGORY_DATA",
-                "message": "Некорректные данные категории",
-                "errors": serializer.errors,
-            },
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        serializer.is_valid(raise_exception=True)
+        category = serializer.save()
+        return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
 
 
 class CategoryDetailView(APIView):

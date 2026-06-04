@@ -2,6 +2,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
+from django.utils import timezone
+import uuid
 
 from products.models import Product
 from .models import SKU, SKUImage
@@ -11,26 +13,58 @@ from .serializers import (
     SKUImageSerializer,
     SKUImageUpdateSerializer,
 )
+from shared_models.models import BaseProductStatus
+from moderation_client import send_product_moderation_event
 
 
 class SKUCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        serializer = SKUSerializer(data=request.data)
+        product_id = request.data.get("product_id")
+        had_skus_before = SKU.objects.filter(product_id=product_id).exists()
 
-        if serializer.is_valid():
-            sku = serializer.save()
-            return Response(SKUSerializer(sku).data, status=status.HTTP_201_CREATED)
+        serializer = SKUSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        sku = serializer.save()
 
-        return Response(
-            {
-                "code": "INVALID_SKU_DATA",
-                "message": "Некорректные данные SKU",
-                "errors": serializer.errors,
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        product = sku.product
+        old_status = product.status
+
+        # Canonic flow: first SKU for CREATED transitions -> ON_MODERATION + CREATED event.
+        if not had_skus_before and old_status == BaseProductStatus.CREATED:
+            product.status = BaseProductStatus.ON_MODERATION
+            product.save(update_fields=["status"])
+
+            try:
+                send_product_moderation_event(
+                    event="CREATED",
+                    product_id=product.id,
+                    seller_id=product.seller_id,
+                    idempotency_key=uuid.uuid4(),
+                    occurred_at=timezone.now(),
+                )
+            except Exception:
+                # Best-effort delivery: sellers shouldn't be blocked by moderation downtime.
+                pass
+
+        # Canonic flow: when adding another SKU to MODERATED/BLOCKED -> re-moderation.
+        elif had_skus_before and old_status in {BaseProductStatus.MODERATED, BaseProductStatus.BLOCKED}:
+            product.status = BaseProductStatus.ON_MODERATION
+            product.save(update_fields=["status"])
+
+            try:
+                send_product_moderation_event(
+                    event="EDITED",
+                    product_id=product.id,
+                    seller_id=product.seller_id,
+                    idempotency_key=uuid.uuid4(),
+                    occurred_at=timezone.now(),
+                )
+            except Exception:
+                pass
+
+        return Response(SKUSerializer(sku).data, status=status.HTTP_201_CREATED)
 
 
 class SKUDetailView(APIView):
@@ -72,19 +106,9 @@ class SKUDetailView(APIView):
             )
 
         serializer = SKUUpdateSerializer(sku, data=request.data, partial=True)
-
-        if serializer.is_valid():
-            sku = serializer.save()
-            return Response(SKUSerializer(sku).data, status=status.HTTP_200_OK)
-
-        return Response(
-            {
-                "code": "INVALID_SKU_DATA",
-                "message": "Некорректные данные SKU",
-                "errors": serializer.errors,
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        serializer.is_valid(raise_exception=True)
+        sku = serializer.save()
+        return Response(SKUSerializer(sku).data, status=status.HTTP_200_OK)
 
     def delete(self, request, sku_id):
         sku = self.get_object(sku_id)
@@ -142,18 +166,9 @@ class SKUImageCreateView(APIView):
 
         serializer = SKUImageSerializer(data=request.data)
 
-        if serializer.is_valid():
-            image = serializer.save(sku=sku)
-            return Response(SKUImageSerializer(image).data, status=status.HTTP_201_CREATED)
-
-        return Response(
-            {
-                "code": "INVALID_SKU_IMAGE_DATA",
-                "message": "Некорректные данные изображения SKU",
-                "errors": serializer.errors,
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        serializer.is_valid(raise_exception=True)
+        image = serializer.save(sku=sku)
+        return Response(SKUImageSerializer(image).data, status=status.HTTP_201_CREATED)
 
 
 class SKUImageDetailView(APIView):
@@ -179,18 +194,9 @@ class SKUImageDetailView(APIView):
 
         serializer = SKUImageUpdateSerializer(image, data=request.data, partial=True)
 
-        if serializer.is_valid():
-            image = serializer.save()
-            return Response(SKUImageSerializer(image).data, status=status.HTTP_200_OK)
-
-        return Response(
-            {
-                "code": "INVALID_SKU_IMAGE_DATA",
-                "message": "Некорректные данные изображения SKU",
-                "errors": serializer.errors,
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        serializer.is_valid(raise_exception=True)
+        image = serializer.save()
+        return Response(SKUImageSerializer(image).data, status=status.HTTP_200_OK)
 
     def delete(self, request, image_id):
         image = self.get_object(image_id)
