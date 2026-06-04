@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.db.models import Prefetch
+from django.db.models import Exists, F, Min, OuterRef, Prefetch, Q, Subquery
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -9,11 +9,12 @@ from rest_framework.exceptions import PermissionDenied
 
 from skus.models import SKU
 from .models import Product, Category
-from .permissions import IsSellerOrServiceKey
+from .permissions import IsSellerOrServiceKey, IsB2CServiceKey
 from .serializers import (
     ProductSerializer,
     CategorySerializer,
     ProductDetailSerializer,
+    PublicProductSerializer,
 )
 
 
@@ -103,6 +104,102 @@ class ProductListView(APIView):
         products = Product.objects.filter(seller_id=request.user.id)
         serializer = ProductSerializer(products, many=True)
         return Response(serializer.data)
+
+class ProductCatalogView(APIView):
+    """
+    GET /api/v1/public/products/
+    B2C service-to-service catalog. Requires X-Service-Key == B2C_SERVICE_KEY.
+    Bearer JWT is intentionally rejected (see IsB2CServiceKey).
+    """
+
+    permission_classes = [IsB2CServiceKey]
+
+    _SORT_MAP = {
+        "price_asc": "min_sku_price",
+        "price_desc": "-min_sku_price",
+        "date_desc": "-created_at",
+        "created_desc": "-created_at",
+    }
+
+    def _visible_queryset(self):
+        """Products visible on vitrine: MODERATED, not deleted, ≥1 active SKU."""
+        has_active_sku = SKU.objects.filter(
+            product=OuterRef("pk"),
+            stock_quantity__gt=F("reserved_quantity"),
+        )
+        sku_qs = SKU.objects.prefetch_related("images", "characteristics")
+        return (
+            Product.objects.select_related("category")
+            .prefetch_related(
+                "images",
+                "characteristics",
+                Prefetch("skus", queryset=sku_qs),
+            )
+            .filter(
+                status="MODERATED",
+                deleted=False,
+            )
+            .filter(Exists(has_active_sku))
+        )
+
+    def _apply_filters(self, qs, request):
+        category_id = request.query_params.get("category_id")
+        if category_id:
+            qs = qs.filter(category_id=category_id)
+
+        search = request.query_params.get("search", "").strip()
+        if len(search) >= 3:
+            qs = qs.filter(
+                Q(title__icontains=search) | Q(description__icontains=search)
+            )
+
+        ids_param = request.query_params.get("ids", "").strip()
+        if ids_param:
+            id_list = [i.strip() for i in ids_param.split(",") if i.strip()]
+            qs = qs.filter(id__in=id_list)
+
+        return qs
+
+    def _apply_sort(self, qs, sort: str):
+        order_field = self._SORT_MAP.get(sort, "-created_at")
+        if "price" in order_field:
+            min_price_sq = (
+                SKU.objects.filter(product=OuterRef("pk"))
+                .values("product")
+                .annotate(mp=Min("price"))
+                .values("mp")
+            )
+            qs = qs.annotate(min_sku_price=Subquery(min_price_sq))
+        return qs.order_by(order_field)
+
+    def get(self, request):
+        try:
+            limit = max(1, min(100, int(request.query_params.get("limit", 20))))
+            offset = max(0, int(request.query_params.get("offset", 0)))
+        except (TypeError, ValueError):
+            limit, offset = 20, 0
+
+        sort = request.query_params.get("sort", "created_desc")
+
+        qs = self._visible_queryset()
+        qs = self._apply_filters(qs, request)
+        qs = self._apply_sort(qs, sort)
+
+        total_count = qs.count()
+        page = qs[offset: offset + limit]
+
+        items = PublicProductSerializer(page, many=True).data
+
+        return Response(
+            {
+                "items": items,
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset,
+            },
+            status=status.HTTP_200_OK,
+        )
+
 
 class CategoryListCreateView(APIView):
     permission_classes = [IsAuthenticated]

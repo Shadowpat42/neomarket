@@ -246,6 +246,77 @@ class BlockingReasonDetailSerializer(serializers.Serializer):
     comment = serializers.CharField()
 
 
+# ── B2C public catalog serializers (no cost_price / no reserved_quantity) ──
+
+
+class PublicSKUCharacteristicSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SKU.characteristics.field.related_model
+        fields = ["name", "value"]
+
+
+class PublicSKUSerializer(serializers.ModelSerializer):
+    """
+    B2C vitrine SKU: excludes cost_price and reserved_quantity.
+    """
+
+    image = serializers.SerializerMethodField()
+    characteristics = serializers.SerializerMethodField()
+    active_quantity = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SKU
+        fields = [
+            "id",
+            "name",
+            "price",
+            "discount",
+            "image",
+            "active_quantity",
+            "characteristics",
+        ]
+
+    def get_image(self, obj: SKU) -> str | None:
+        first = obj.images.order_by("ordering").first()
+        return first.url if first else None
+
+    def get_active_quantity(self, obj: SKU) -> int:
+        return max(0, (obj.stock_quantity or 0) - (obj.reserved_quantity or 0))
+
+    def get_characteristics(self, obj: SKU) -> list:
+        return [{"name": c.name, "value": c.value} for c in obj.characteristics.all()]
+
+
+class PublicProductSerializer(serializers.ModelSerializer):
+    """
+    B2C vitrine product: no blocking/moderation fields, no cost_price.
+    Matches ProductPublicResponse in OpenAPI.
+    """
+
+    category = ProductCategoryBriefSerializer(read_only=True)
+    images = ProductDetailImageSerializer(many=True, read_only=True)
+    characteristics = ProductDetailCharacteristicSerializer(many=True, read_only=True)
+    skus = PublicSKUSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "seller_id",
+            "category_id",
+            "title",
+            "slug",
+            "description",
+            "status",
+            "category",
+            "images",
+            "characteristics",
+            "skus",
+            "created_at",
+            "updated_at",
+        ]
+
+
 class ProductDetailSerializer(serializers.ModelSerializer):
     """
     Seller cabinet: GET /api/v1/products/{id} (B2B-5 / ProductDetailResponse).
