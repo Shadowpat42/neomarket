@@ -1,7 +1,16 @@
 from django.utils.text import slugify
 from rest_framework import serializers
-from .models import Product, Image, Characteristic, Category, BaseProductStatus
+from .models import (
+    Product,
+    Image,
+    Characteristic,
+    Category,
+    BaseProductStatus,
+    BlockingReason,
+    ProductFieldReport,
+)
 from skus.serializers import SKUSerializer
+from skus.models import SKU
 
 
 class ImageSerializer(serializers.ModelSerializer):
@@ -169,3 +178,121 @@ class ProductSerializer(serializers.ModelSerializer):
                 Characteristic.objects.create(product=instance, **characteristic_data)
 
         return instance
+
+
+class ProductCategoryBriefSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = ["id", "name"]
+
+
+class ProductDetailImageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Image
+        fields = ["url", "ordering"]
+
+
+class ProductDetailCharacteristicSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Characteristic
+        fields = ["name", "value"]
+
+
+class ProductDetailSKUCharacteristicSerializer(serializers.Serializer):
+    name = serializers.CharField()
+    value = serializers.CharField()
+
+
+class ProductDetailSKUSerializer(serializers.ModelSerializer):
+    """SKU в seller cabinet (B2B-5): одно поле image, cost_price, reserved_quantity."""
+
+    image = serializers.SerializerMethodField()
+    characteristics = ProductDetailSKUCharacteristicSerializer(many=True, read_only=True)
+    active_quantity = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SKU
+        fields = [
+            "id",
+            "name",
+            "price",
+            "cost_price",
+            "discount",
+            "image",
+            "active_quantity",
+            "reserved_quantity",
+            "characteristics",
+        ]
+
+    def get_image(self, obj: SKU) -> str | None:
+        first = obj.images.order_by("ordering").first()
+        return first.url if first else None
+
+    def get_active_quantity(self, obj: SKU) -> int:
+        reserved = obj.reserved_quantity or 0
+        stock = obj.stock_quantity or 0
+        return max(0, stock - reserved)
+
+
+class FieldReportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductFieldReport
+        fields = ["field_name", "sku_id", "comment"]
+
+
+class BlockingReasonDetailSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    title = serializers.CharField()
+    comment = serializers.CharField()
+
+
+class ProductDetailSerializer(serializers.ModelSerializer):
+    """
+    Seller cabinet: GET /api/v1/products/{id} (B2B-5 / ProductDetailResponse).
+    """
+
+    category = ProductCategoryBriefSerializer(read_only=True)
+    images = ProductDetailImageSerializer(many=True, read_only=True)
+    characteristics = ProductDetailCharacteristicSerializer(many=True, read_only=True)
+    skus = ProductDetailSKUSerializer(many=True, read_only=True)
+    blocked = serializers.SerializerMethodField()
+    blocking_reason = serializers.SerializerMethodField()
+    field_reports = FieldReportSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "title",
+            "description",
+            "status",
+            "deleted",
+            "blocked",
+            "category",
+            "images",
+            "characteristics",
+            "skus",
+            "blocking_reason",
+            "field_reports",
+        ]
+
+    def get_blocked(self, obj: Product) -> bool:
+        return obj.status in {
+            BaseProductStatus.BLOCKED,
+            BaseProductStatus.HARD_BLOCKED,
+        }
+
+    def get_blocking_reason(self, obj: Product):
+        if not obj.blocking_reason_id:
+            return None
+
+        try:
+            reason = BlockingReason.objects.get(id=obj.blocking_reason_id)
+        except BlockingReason.DoesNotExist:
+            return None
+
+        return {
+            "id": reason.id,
+            "title": reason.title,
+            "comment": obj.moderator_comment or "",
+        }

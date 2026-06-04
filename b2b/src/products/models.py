@@ -66,3 +66,37 @@ class Characteristic(BaseCharacteristic):
 
     def __str__(self):
         return f"{self.product.title}: {self.name} = {self.value}"
+
+
+class BlockingReason(models.Model):
+    """Справочник причин блокировки (заполняется при событии BLOCKED от Moderation)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=255)
+
+    class Meta:
+        verbose_name = "Причина блокировки"
+        verbose_name_plural = "Причины блокировки"
+
+    def __str__(self):
+        return self.title
+
+
+class ProductFieldReport(models.Model):
+    """Замечание модератора по конкретному полю товара или SKU."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name="field_reports"
+    )
+    field_name = models.CharField(max_length=64)
+    sku_id = models.UUIDField(null=True, blank=True)
+    comment = models.TextField()
+
+    class Meta:
+        verbose_name = "Замечание модератора"
+        verbose_name_plural = "Замечания модератора"
+        ordering = ["field_name"]
+
+    def __str__(self):
+        return f"{self.product_id}: {self.field_name}"
