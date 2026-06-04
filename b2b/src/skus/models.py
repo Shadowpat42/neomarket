@@ -5,6 +5,25 @@ from products.models import Product
 from shared_models.models import BaseImage, BaseCharacteristic
 
 
+class ReserveOperation(models.Model):
+    """
+    Idempotency table for POST /api/v1/inventory/reserve.
+    One row per idempotency_key; stores the original success response
+    so repeat requests return the same payload without double-deducting.
+    """
+
+    idempotency_key = models.UUIDField(primary_key=True)
+    result = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Операция резервирования"
+        verbose_name_plural = "Операции резервирования"
+
+    def __str__(self):
+        return str(self.idempotency_key)
+
+
 class SKU(models.Model):
     """Конкретный вариант товара: цвет, память, размер и т.п."""
 

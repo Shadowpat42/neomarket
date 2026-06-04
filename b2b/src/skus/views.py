@@ -6,6 +6,7 @@ from django.utils import timezone
 import uuid
 
 from products.models import Product
+from products.permissions import IsB2CServiceKey
 from .models import SKU, SKUImage
 from .serializers import (
     SKUSerializer,
@@ -15,6 +16,7 @@ from .serializers import (
 )
 from shared_models.models import BaseProductStatus
 from moderation_client import send_product_moderation_event
+from .inventory import InsufficientStockError, reserve_skus, unreserve_skus
 
 
 class SKUCreateView(APIView):
@@ -212,3 +214,85 @@ class SKUImageDetailView(APIView):
 
         image.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ReserveView(APIView):
+    """
+    POST /api/v1/inventory/reserve
+    All-or-nothing SKU reservation (called by B2C at checkout).
+    Requires X-Service-Key == B2C_SERVICE_KEY.
+    Idempotent by idempotency_key.
+    """
+
+    permission_classes = [IsB2CServiceKey]
+
+    def post(self, request):
+        idempotency_key = request.data.get("idempotency_key")
+        order_id = request.data.get("order_id")
+        items = request.data.get("items")
+
+        if not idempotency_key:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "idempotency_key is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not order_id:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "order_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not items:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "items is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result, _ = reserve_skus(
+                idempotency_key=idempotency_key,
+                order_id=order_id,
+                items=items,
+            )
+        except InsufficientStockError as exc:
+            return Response(
+                {
+                    "reserved": False,
+                    "failed_items": exc.failed_items,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except ValueError as exc:
+            return Response(
+                {"code": "NOT_FOUND", "message": str(exc)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class UnreserveView(APIView):
+    """
+    POST /api/v1/inventory/unreserve
+    Compensating transaction: release SKU reservation on order cancellation.
+    Requires X-Service-Key == B2C_SERVICE_KEY.
+    """
+
+    permission_classes = [IsB2CServiceKey]
+
+    def post(self, request):
+        order_id = request.data.get("order_id")
+        items = request.data.get("items")
+
+        if not order_id:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "order_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not items:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "items is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = unreserve_skus(order_id=order_id, items=items)
+        return Response(result, status=status.HTTP_200_OK)
