@@ -26,6 +26,9 @@ from .serializers import (
 )
 from shared_models.models import BaseProductStatus
 from b2c_client import notify_product_blocked
+from moderation_client import send_product_moderation_event
+import uuid
+from django.utils import timezone
 
 
 class ProductListCreateView(APIView):
@@ -120,7 +123,41 @@ class ProductDetailView(APIView):
         if product.status == BaseProductStatus.HARD_BLOCKED:
             return self._hard_blocked_response()
 
-        product.delete()
+        # B2B-4: Check if already deleted
+        if product.deleted:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "Product already deleted"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # B2B-4: Soft delete
+        product.deleted = True
+        product.save(update_fields=["deleted"])
+
+        # B2B-4: Send events (best-effort)
+        sku_ids = [str(sku.id) for sku in product.skus.all()]
+
+        try:
+            send_product_moderation_event(
+                event="DELETED",
+                product_id=product.id,
+                seller_id=product.seller_id,
+                idempotency_key=uuid.uuid4(),
+                occurred_at=timezone.now(),
+            )
+        except Exception:
+            pass
+
+        try:
+            from b2c_client import notify_product_deleted
+            notify_product_deleted(
+                product_id=product.id,
+                sku_ids=sku_ids,
+                idempotency_key=str(uuid.uuid4()),
+            )
+        except Exception:
+            pass
+
         return Response(status=status.HTTP_204_NO_CONTENT)
     
 class ProductListView(APIView):

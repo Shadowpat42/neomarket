@@ -71,3 +71,29 @@ def notify_product_blocked(
             "sku_ids": sku_ids,
         },
     )
+
+
+def notify_product_deleted(
+    *,
+    product_id: Any,
+    sku_ids: list[str],
+    idempotency_key: str | None = None,
+) -> None:
+    """
+    Notify B2C that a product has been deleted (soft delete).
+    B2C uses this to hide the product and remove it from carts/wishlists.
+    """
+    import uuid as _uuid
+
+    b2c_base_url = os.getenv("B2C_URL", "http://b2c:8002").rstrip("/")
+    endpoint = f"{b2c_base_url}/api/v1/events/product"
+
+    _post(
+        endpoint,
+        {
+            "idempotency_key": idempotency_key or str(_uuid.uuid4()),
+            "event": "PRODUCT_DELETED",
+            "product_id": str(product_id),
+            "sku_ids": sku_ids,
+        },
+    )
