@@ -40,7 +40,7 @@ class SKUCreateView(APIView):
 
             try:
                 send_product_moderation_event(
-                    event="CREATED",
+                    event_type="PRODUCT_CREATED",
                     product_id=product.id,
                     seller_id=product.seller_id,
                     idempotency_key=uuid.uuid4(),
@@ -57,7 +57,7 @@ class SKUCreateView(APIView):
 
             try:
                 send_product_moderation_event(
-                    event="EDITED",
+                    event_type="PRODUCT_EDITED",
                     product_id=product.id,
                     seller_id=product.seller_id,
                     idempotency_key=uuid.uuid4(),

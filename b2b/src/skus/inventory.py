@@ -124,7 +124,7 @@ def reserve_skus(
 
         reserved_at = timezone.now().isoformat()
         result: dict = {
-            "reserved": True,
+            "status": "RESERVED",
             "order_id": str(order_id),
             "reserved_at": reserved_at,
             "items": result_items,

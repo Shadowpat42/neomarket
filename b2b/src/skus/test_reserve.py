@@ -78,7 +78,7 @@ class ReserveTests(APITestCase):
         response = self.client.post(RESERVE_URL, payload, format="json", **_svc_headers())
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertTrue(response.data["reserved"])
+        self.assertEqual(response.data["status"], "RESERVED")
         self.assertIn("items", response.data)
 
         self.sku_a.refresh_from_db()
