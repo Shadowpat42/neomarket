@@ -290,13 +290,14 @@ class PublicSKUSerializer(serializers.ModelSerializer):
 class PublicProductSerializer(serializers.ModelSerializer):
     """
     B2C vitrine product: no blocking/moderation fields, no cost_price.
-    Matches ProductPublicResponse in OpenAPI.
+    Matches ProductPublicShortResponse in OpenAPI (includes min_price).
     """
 
     category = ProductCategoryBriefSerializer(read_only=True)
     images = ProductDetailImageSerializer(many=True, read_only=True)
     characteristics = ProductDetailCharacteristicSerializer(many=True, read_only=True)
     skus = PublicSKUSerializer(many=True, read_only=True)
+    min_price = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -308,6 +309,7 @@ class PublicProductSerializer(serializers.ModelSerializer):
             "slug",
             "description",
             "status",
+            "min_price",
             "category",
             "images",
             "characteristics",
@@ -315,6 +317,10 @@ class PublicProductSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_min_price(self, obj: Product) -> int | None:
+        prices = [sku.price for sku in obj.skus.all() if sku.price is not None]
+        return min(prices) if prices else None
 
 
 class ProductDetailSerializer(serializers.ModelSerializer):
@@ -334,7 +340,10 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         model = Product
         fields = [
             "id",
+            "seller_id",
+            "category_id",
             "title",
+            "slug",
             "description",
             "status",
             "deleted",
@@ -345,6 +354,8 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             "skus",
             "blocking_reason",
             "field_reports",
+            "created_at",
+            "updated_at",
         ]
 
     def get_blocked(self, obj: Product) -> bool:

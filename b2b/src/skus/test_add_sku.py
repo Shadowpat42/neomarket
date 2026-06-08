@@ -92,7 +92,7 @@ class AddSkuTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
         mock_send.assert_called_once_with(
-            event="CREATED",
+            event_type="PRODUCT_CREATED",
             product_id=product.id,
             seller_id=product.seller_id,
             idempotency_key=fixed_uuid,
