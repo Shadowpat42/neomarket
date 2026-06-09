@@ -7,7 +7,6 @@ from rest_framework.test import APIClient
 from cart.models import CartItem
 from .models import Order, OrderItem
 
-
 PRODUCT_ID = "bc3fc1b9-873a-4651-9483-7249bd5173df"
 SKU_ID = "62fbcabb-be0e-479e-a33b-b848c75da7e0"
 USER_ID = "556f051a-baee-4b0f-bd41-555b5e01e6f4"
@@ -188,3 +187,125 @@ class CheckoutTests(TestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.data["code"], "B2B_UNAVAILABLE")
+
+
+class CancelOrderTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_USER_ID": USER_ID,
+        }
+
+    def create_order(self, status_value="PAID", user_id=USER_ID):
+        order = Order.objects.create(
+            user_id=user_id,
+            idempotency_key=f"cancel-test-{status_value}-{user_id}",
+            status=status_value,
+            total_amount=12999000,
+        )
+
+        OrderItem.objects.create(
+            order=order,
+            product_id=PRODUCT_ID,
+            sku_id=SKU_ID,
+            product_title="iPhone 15 Pro Max",
+            sku_name="256GB Black",
+            quantity=1,
+            unit_price=12999000,
+            line_total=12999000,
+        )
+
+        return order
+
+    @patch("orders.views.b2b_unreserve")
+    def test_cancel_paid_order_transitions_to_cancelled(self, mock_unreserve):
+        mock_unreserve.return_value = (
+            200,
+            {
+                "order_id": "order-id",
+                "status": "UNRESERVED",
+                "processed_at": "2026-06-10T00:00:00Z",
+            },
+        )
+
+        order = self.create_order(status_value="PAID")
+
+        response = self.client.post(
+            f"/api/v1/orders/{order.id}/cancel",
+            {"reason": "Передумал"},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        order.refresh_from_db()
+
+        self.assertEqual(order.status, "CANCELLED")
+        self.assertEqual(order.cancel_reason, "Передумал")
+        self.assertIsNotNone(order.cancelled_at)
+
+        self.assertEqual(response.data["status"], "CANCELLED")
+
+    @patch("orders.views.b2b_unreserve")
+    def test_unreserve_failure_transitions_to_cancel_pending(self, mock_unreserve):
+        mock_unreserve.side_effect = URLError("B2B unavailable")
+
+        order = self.create_order(status_value="PAID")
+
+        response = self.client.post(
+            f"/api/v1/orders/{order.id}/cancel",
+            {"reason": "Не нужен"},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 202)
+
+        order.refresh_from_db()
+
+        self.assertEqual(order.status, "CANCEL_PENDING")
+        self.assertEqual(order.cancel_reason, "Не нужен")
+
+        self.assertEqual(response.data["status"], "CANCEL_PENDING")
+
+    @patch("orders.views.b2b_unreserve")
+    def test_cancel_assembling_order_returns_409(self, mock_unreserve):
+        order = self.create_order(status_value="ASSEMBLING")
+
+        response = self.client.post(
+            f"/api/v1/orders/{order.id}/cancel",
+            {"reason": "Передумал"},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "CANCEL_NOT_ALLOWED")
+        self.assertEqual(response.data["details"]["current_status"], "ASSEMBLING")
+
+        mock_unreserve.assert_not_called()
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, "ASSEMBLING")
+
+    @patch("orders.views.b2b_unreserve")
+    def test_other_user_order_returns_404(self, mock_unreserve):
+        other_user_id = "11111111-1111-1111-1111-111111111111"
+
+        order = self.create_order(
+            status_value="PAID",
+            user_id=other_user_id,
+        )
+
+        response = self.client.post(
+            f"/api/v1/orders/{order.id}/cancel",
+            {"reason": "Пытаюсь отменить чужой"},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data["code"], "ORDER_NOT_FOUND")
+
+        mock_unreserve.assert_not_called()

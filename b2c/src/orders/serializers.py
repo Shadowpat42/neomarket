@@ -32,6 +32,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "idempotency_key",
             "status",
             "total_amount",
+            "cancel_reason",
+            "cancelled_at",
             "items",
             "created_at",
         ]

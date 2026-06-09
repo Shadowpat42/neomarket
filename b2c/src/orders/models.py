@@ -4,7 +4,11 @@ from django.db import models
 
 class Order(models.Model):
     STATUS_CHOICES = [
+        ("CREATED", "Создан"),
         ("PAID", "Оплачен"),
+        ("ASSEMBLING", "В сборке"),
+        ("CANCELLED", "Отменён"),
+        ("CANCEL_PENDING", "Отмена ожидает повтора"),
         ("RESERVE_FAILED", "Ошибка резерва"),
     ]
 
@@ -15,6 +19,9 @@ class Order(models.Model):
 
     status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="PAID")
     total_amount = models.PositiveIntegerField(default=0)
+
+    cancel_reason = models.TextField(blank=True, default="")
+    cancelled_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

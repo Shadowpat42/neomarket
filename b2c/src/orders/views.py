@@ -6,6 +6,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -109,6 +110,49 @@ def b2b_reserve(order_id, items, idempotency_key):
     try:
         with opener.open(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            body = {}
+
+        return exc.code, body
+
+
+def b2b_unreserve(order):
+    url = f"{B2B_BASE_URL}/api/v1/inventory/unreserve"
+
+    body = {
+        "order_id": str(order.id),
+        "items": [
+            {
+                "sku_id": str(item.sku_id),
+                "quantity": item.quantity,
+            }
+            for item in order.items.all()
+        ],
+    }
+
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+
+    req = urllib_request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Service-Key": B2C_SERVICE_KEY,
+        },
+    )
+
+    opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
+
+    try:
+        with opener.open(req, timeout=5) as resp:
+            try:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+            except Exception:
+                return resp.status, {}
     except HTTPError as exc:
         try:
             body = json.loads(exc.read().decode("utf-8"))
@@ -312,3 +356,75 @@ class CheckoutView(APIView):
             OrderSerializer(order).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+class CancelOrderView(APIView):
+    def post(self, request, order_id):
+        user_id = get_user_id_from_request(request)
+
+        if not user_id:
+            return error(
+                "UNAUTHORIZED",
+                "Нужна авторизация",
+                status.HTTP_401_UNAUTHORIZED,
+            )
+
+        order = Order.objects.prefetch_related("items").filter(
+            id=order_id,
+            user_id=user_id,
+        ).first()
+
+        if not order:
+            return error(
+                "ORDER_NOT_FOUND",
+                "Заказ не найден",
+                status.HTTP_404_NOT_FOUND,
+            )
+
+        if order.status not in ["CREATED", "PAID"]:
+            return error(
+                "CANCEL_NOT_ALLOWED",
+                "Заказ нельзя отменить в текущем статусе",
+                status.HTTP_409_CONFLICT,
+                details={
+                    "current_status": order.status,
+                    "allowed_statuses": ["CREATED", "PAID"],
+                },
+            )
+
+        reason = request.data.get("reason", "")
+
+        try:
+            unreserve_status, unreserve_body = b2b_unreserve(order)
+
+            if unreserve_status != 200:
+                order.status = "CANCEL_PENDING"
+                order.cancel_reason = reason
+                order.save()
+
+                return error(
+                    "UNRESERVE_FAILED",
+                    "Отмена принята, но снятие резерва будет повторено позже",
+                    status.HTTP_202_ACCEPTED,
+                    details=unreserve_body,
+                )
+
+            order.status = "CANCELLED"
+            order.cancel_reason = reason
+            order.cancelled_at = timezone.now()
+            order.save()
+
+            return Response(
+                OrderSerializer(order).data,
+                status=status.HTTP_200_OK,
+            )
+
+        except (URLError, OSError):
+            order.status = "CANCEL_PENDING"
+            order.cancel_reason = reason
+            order.save()
+
+            return Response(
+                OrderSerializer(order).data,
+                status=status.HTTP_202_ACCEPTED,
+            )
