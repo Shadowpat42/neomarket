@@ -124,9 +124,9 @@ class ReserveTests(APITestCase):
         response = self.client.post(RESERVE_URL, payload, format="json", **_svc_headers())
 
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertFalse(response.data["reserved"])
-        self.assertIn("failed_items", response.data)
-        failed_sku_ids = {f["sku_id"] for f in response.data["failed_items"]}
+        self.assertEqual(response.data["code"], "INSUFFICIENT_STOCK")
+        self.assertIn("details", response.data)
+        failed_sku_ids = {f["sku_id"] for f in response.data["details"]["failed_items"]}
         self.assertIn(str(self.sku_b.id), failed_sku_ids)
 
         # All-or-nothing: sku_a must NOT have been modified

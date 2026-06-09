@@ -43,7 +43,7 @@ def _post(endpoint: str, payload: dict) -> None:
 
 def _b2c_events_endpoint() -> str:
     b2c_base_url = os.getenv("B2C_URL", "http://b2c:8002").rstrip("/")
-    return f"{b2c_base_url}/api/v1/events/b2b"
+    return f"{b2c_base_url}/api/v1/b2b/events"
 
 
 def notify_sku_out_of_stock(*, sku_id: Any, product_id: Any) -> None:
