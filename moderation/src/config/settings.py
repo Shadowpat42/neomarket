@@ -139,3 +139,4 @@ SIMPLE_JWT = {
 # ── Inter-service keys ────────────────────────────────────────────────────────
 B2B_URL = os.getenv("B2B_URL", "http://b2b:8001")
 MOD_TO_B2B_KEY = os.getenv("MOD_TO_B2B_KEY", "mod_to_b2b_key")
+B2B_TO_MOD_KEY = os.getenv("B2B_TO_MOD_KEY", "b2b_to_mod_key")

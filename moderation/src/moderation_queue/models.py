@@ -16,12 +16,37 @@ class TicketStatus(models.TextChoices):
     BLOCKED = "BLOCKED"
     HARD_BLOCKED = "HARD_BLOCKED"
 
+    @classmethod
+    def terminal_statuses(cls):
+        """Statuses that no longer accept any modifications."""
+        return {cls.HARD_BLOCKED}
+
+
+class BlockingReason(models.Model):
+    """
+    Catalogue of reasons a product can be blocked.
+
+    hard_block=True → product goes to HARD_BLOCKED (terminal).
+    hard_block=False → product goes to BLOCKED (seller can appeal/re-submit).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    code = models.CharField(max_length=64, unique=True)
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True, default="")
+    hard_block = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.code} (hard={self.hard_block})"
+
 
 class Ticket(models.Model):
     """
     Moderation ticket: one ticket per product review request.
 
     Lifecycle: PENDING → IN_REVIEW → APPROVED | BLOCKED | HARD_BLOCKED
+    HARD_BLOCKED is terminal — only a super-admin can undo via Django Admin (data-fix).
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -46,6 +71,13 @@ class Ticket(models.Model):
         on_delete=models.SET_NULL,
         related_name="assigned_tickets",
     )
+    blocking_reason = models.ForeignKey(
+        BlockingReason,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="tickets",
+    )
     claimed_at = models.DateTimeField(null=True, blank=True)
     claim_expires_at = models.DateTimeField(null=True, blank=True)
     decision_at = models.DateTimeField(null=True, blank=True)
@@ -57,3 +89,25 @@ class Ticket(models.Model):
 
     class Meta:
         ordering = ["queue_priority", "created_at"]
+
+    def is_terminal(self) -> bool:
+        return self.status in TicketStatus.terminal_statuses()
+
+
+class TicketFieldReport(models.Model):
+    """
+    Inline annotation for a specific field that was found invalid.
+    Cleared and re-created on each moderation decision.
+    """
+
+    SEVERITY_CHOICES = [("INFO", "Info"), ("WARNING", "Warning"), ("ERROR", "Error")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    ticket = models.ForeignKey(
+        Ticket,
+        on_delete=models.CASCADE,
+        related_name="field_reports",
+    )
+    field_path = models.CharField(max_length=255)
+    message = models.CharField(max_length=1000)
+    severity = models.CharField(max_length=10, choices=SEVERITY_CHOICES, default="ERROR")
