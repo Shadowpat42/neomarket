@@ -256,8 +256,9 @@ class ReserveView(APIView):
         except InsufficientStockError as exc:
             return Response(
                 {
-                    "reserved": False,
-                    "failed_items": exc.failed_items,
+                    "code": "INSUFFICIENT_STOCK",
+                    "message": "Недостаточно остатка для одного или нескольких SKU",
+                    "details": {"failed_items": exc.failed_items},
                 },
                 status=status.HTTP_409_CONFLICT,
             )
