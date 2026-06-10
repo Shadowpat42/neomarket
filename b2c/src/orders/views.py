@@ -381,7 +381,7 @@ class CancelOrderView(APIView):
                 status.HTTP_404_NOT_FOUND,
             )
 
-        if order.status not in ["CREATED", "PAID"]:
+        if order.status not in ["CREATED", "PAID", "ASSEMBLING"]:
             return error(
                 "CANCEL_NOT_ALLOWED",
                 "Заказ нельзя отменить в текущем статусе",

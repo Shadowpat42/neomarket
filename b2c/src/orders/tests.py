@@ -270,8 +270,36 @@ class CancelOrderTests(TestCase):
         self.assertEqual(response.data["status"], "CANCEL_PENDING")
 
     @patch("orders.views.b2b_unreserve")
-    def test_cancel_assembling_order_returns_409(self, mock_unreserve):
+    def test_cancel_assembling_order_transitions_to_cancelled(self, mock_unreserve):
+        mock_unreserve.return_value = (
+            200,
+            {
+                "order_id": "order-id",
+                "status": "UNRESERVED",
+                "processed_at": "2026-06-10T00:00:00Z",
+            },
+        )
+
         order = self.create_order(status_value="ASSEMBLING")
+
+        response = self.client.post(
+            f"/api/v1/orders/{order.id}/cancel",
+            {"reason": "Передумал"},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        order.refresh_from_db()
+
+        self.assertEqual(order.status, "CANCELLED")
+        self.assertEqual(response.data["status"], "CANCELLED")
+        mock_unreserve.assert_called_once()
+
+    @patch("orders.views.b2b_unreserve")
+    def test_cancel_delivered_order_returns_409(self, mock_unreserve):
+        order = self.create_order(status_value="DELIVERED")
 
         response = self.client.post(
             f"/api/v1/orders/{order.id}/cancel",
@@ -282,12 +310,9 @@ class CancelOrderTests(TestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.data["code"], "CANCEL_NOT_ALLOWED")
-        self.assertEqual(response.data["details"]["current_status"], "ASSEMBLING")
+        self.assertEqual(response.data["details"]["current_status"], "DELIVERED")
 
         mock_unreserve.assert_not_called()
-
-        order.refresh_from_db()
-        self.assertEqual(order.status, "ASSEMBLING")
 
     @patch("orders.views.b2b_unreserve")
     def test_other_user_order_returns_404(self, mock_unreserve):

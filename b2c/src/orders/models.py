@@ -9,6 +9,7 @@ class Order(models.Model):
         ("ASSEMBLING", "В сборке"),
         ("CANCELLED", "Отменён"),
         ("CANCEL_PENDING", "Отмена ожидает повтора"),
+        ("DELIVERED", "Доставлен"),
         ("RESERVE_FAILED", "Ошибка резерва"),
     ]
 
