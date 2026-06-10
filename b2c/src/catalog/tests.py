@@ -240,3 +240,395 @@ class ProductCardTests(TestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.data["code"], "B2B_UNAVAILABLE")
+
+
+class CatalogSearchTests(TestCase):
+    """US-CAT-02: Search tests."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    @patch("catalog.views._b2b_get")
+    def test_search_returns_matching_products(self, mock_b2b_get):
+        mock_b2b_get.return_value = (200, catalog_b2b_response())
+
+        response = self.client.get("/api/v1/catalog/products?search=iphone")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["total_count"], 1)
+        self.assertEqual(response.data["items"][0]["name"], "iPhone 15 Pro Max Test 123")
+
+    def test_short_query_returns_400(self):
+        """Search query shorter than 3 characters returns 400."""
+        response = self.client.get("/api/v1/catalog/products?search=ab")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "SEARCH_QUERY_TOO_SHORT")
+        self.assertIn("min_length", response.data["details"])
+        self.assertEqual(response.data["details"]["min_length"], 3)
+
+    @patch("catalog.views._b2b_get")
+    def test_special_chars_do_not_break_query(self, mock_b2b_get):
+        """Special characters (% , _ , ') should not break the query."""
+        mock_b2b_get.return_value = (200, catalog_b2b_response())
+
+        # Test with special characters
+        special_queries = ["iPhone%15", "кофе'", "test_"]
+        for query in special_queries:
+            response = self.client.get(f"/api/v1/catalog/products?search={query}")
+            self.assertEqual(response.status_code, 200, f"Query '{query}' should not fail")
+
+    @patch("catalog.views._b2b_get")
+    def test_empty_results_returns_200(self, mock_b2b_get):
+        """Empty search results should return 200 with empty items list."""
+        mock_b2b_get.return_value = (200, {"items": [], "total_count": 0, "limit": 20, "offset": 0})
+
+        response = self.client.get("/api/v1/catalog/products?search=nonexistent")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["items"], [])
+        self.assertEqual(response.data["total_count"], 0)
+
+
+class SimilarProductsTests(TestCase):
+    """US-CAT-04: Similar products tests."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.product_id = "bc3fc1b9-873a-4651-9483-7249bd5173df"
+        self.category_id = "d8b8b86f-8d9b-4130-a1b3-9ec62020eb13"
+
+    def _get_similar_response(self, product_id, category_id, include_current=True):
+        """Helper to build similar products response."""
+        items = [
+            {
+                "id": "similar-1-id",
+                "title": "Similar Product 1",
+                "slug": "similar-product-1",
+                "description": "Similar item",
+                "status": "MODERATED",
+                "category": {
+                    "id": category_id,
+                    "name": "Смартфоны",
+                },
+                "images": [
+                    {
+                        "url": "https://example.com/similar1.jpg",
+                        "ordering": 0,
+                    }
+                ],
+                "skus": [
+                    {
+                        "id": "sku-similar-1",
+                        "name": "Black 128GB",
+                        "price": 9999000,
+                        "discount": 0,
+                        "image": "https://example.com/similar1-black.jpg",
+                        "active_quantity": 10,
+                    }
+                ],
+            },
+            {
+                "id": "similar-2-id",
+                "title": "Similar Product 2",
+                "slug": "similar-product-2",
+                "description": "Another similar item",
+                "status": "MODERATED",
+                "category": {
+                    "id": category_id,
+                    "name": "Смартфоны",
+                },
+                "images": [
+                    {
+                        "url": "https://example.com/similar2.jpg",
+                        "ordering": 0,
+                    }
+                ],
+                "skus": [
+                    {
+                        "id": "sku-similar-2",
+                        "name": "White 256GB",
+                        "price": 11999000,
+                        "discount": 0,
+                        "image": "https://example.com/similar2-white.jpg",
+                        "active_quantity": 5,
+                    }
+                ],
+            },
+        ]
+
+        if include_current:
+            items.append({
+                "id": product_id,
+                "title": "Current Product",
+                "slug": "current-product",
+                "description": "Current product",
+                "status": "MODERATED",
+                "category": {
+                    "id": category_id,
+                    "name": "Смартфоны",
+                },
+                "images": [
+                    {
+                        "url": "https://example.com/current.jpg",
+                        "ordering": 0,
+                    }
+                ],
+                "skus": [
+                    {
+                        "id": "sku-current",
+                        "name": "Red 512GB",
+                        "price": 14999000,
+                        "discount": 0,
+                        "image": "https://example.com/current-red.jpg",
+                        "active_quantity": 3,
+                    }
+                ],
+            })
+
+        return {
+            "items": items,
+            "total_count": len(items),
+            "limit": 8,
+            "offset": 0,
+        }
+
+    @patch("catalog.views._b2b_get")
+    def test_similar_returns_up_to_8_from_same_category(self, mock_b2b_get):
+        """Similar products should return up to 8 from same category, excluding current product."""
+        # First call gets current product, second gets similar products
+        def side_effect(path, params=None):
+            if params and "ids" in str(params):
+                return (200, {"items": [{
+                    "id": self.product_id,
+                    "title": "Current Product",
+                    "category": {"id": self.category_id},
+                }]})
+            return (200, self._get_similar_response(self.product_id, self.category_id))
+
+        mock_b2b_get.side_effect = side_effect
+
+        response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["items"]), 2)  # Excludes current product
+        self.assertEqual(response.data["total_count"], 2)
+
+        # Verify current product is excluded
+        for item in response.data["items"]:
+            self.assertNotEqual(item["id"], self.product_id)
+
+    @patch("catalog.views._b2b_get")
+    def test_empty_category_returns_200_empty_list(self, mock_b2b_get):
+        """If no similar products exist, return 200 with empty list."""
+        def side_effect(path, params=None):
+            if params and "ids" in str(params):
+                return (200, {"items": [{
+                    "id": self.product_id,
+                    "title": "Current Product",
+                    "category": {"id": self.category_id},
+                }]})
+            return (200, {"items": [], "total_count": 0, "limit": 8, "offset": 0})
+
+        mock_b2b_get.side_effect = side_effect
+
+        response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["items"], [])
+        self.assertEqual(response.data["total_count"], 0)
+
+    @patch("catalog.views._b2b_get")
+    def test_unknown_product_returns_404(self, mock_b2b_get):
+        """Unknown product should return 404."""
+        mock_b2b_get.return_value = (200, {"items": []})
+
+        response = self.client.get("/api/v1/catalog/products/00000000-0000-0000-0000-000000000000/similar")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data["code"], "PRODUCT_NOT_FOUND")
+
+    @patch("catalog.views._b2b_get")
+    def test_similar_products_excludes_current_product(self, mock_b2b_get):
+        """Current product should be excluded from similar products."""
+        def side_effect(path, params=None):
+            if params and "ids" in str(params):
+                return (200, {"items": [{
+                    "id": self.product_id,
+                    "title": "Current Product",
+                    "category": {"id": self.category_id},
+                }]})
+            return (200, self._get_similar_response(self.product_id, self.category_id))
+
+        mock_b2b_get.side_effect = side_effect
+
+        response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
+
+        self.assertEqual(response.status_code, 200)
+        product_ids = [item["id"] for item in response.data["items"]]
+        self.assertNotIn(self.product_id, product_ids)
+
+    @patch("catalog.views._b2b_get")
+    def test_similar_products_limits_to_8(self, mock_b2b_get):
+        """Similar products should be limited to 8 items."""
+        # Create response with more than 8 items
+        items = []
+        for i in range(12):
+            items.append({
+                "id": f"similar-{i}-id",
+                "title": f"Similar Product {i}",
+                "slug": f"similar-product-{i}",
+                "description": f"Similar item {i}",
+                "status": "MODERATED",
+                "category": {
+                    "id": self.category_id,
+                    "name": "Смартфоны",
+                },
+                "images": [{"url": f"https://example.com/similar{i}.jpg", "ordering": 0}],
+                "skus": [{
+                    "id": f"sku-similar-{i}",
+                    "name": f"Variant {i}",
+                    "price": 9999000 + i * 100000,
+                    "discount": 0,
+                    "image": f"https://example.com/similar{i}.jpg",
+                    "active_quantity": 10,
+                }],
+            })
+
+        def side_effect(path, params=None):
+            if params and "ids" in str(params):
+                return (200, {"items": [{
+                    "id": self.product_id,
+                    "title": "Current Product",
+                    "category": {"id": self.category_id},
+                }]})
+            return (200, {"items": items, "total_count": len(items), "limit": 8, "offset": 0})
+
+        mock_b2b_get.side_effect = side_effect
+
+        response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(len(response.data["items"]), 8)
+
+    @patch("catalog.views._b2b_get")
+    def test_similar_products_with_stock_info(self, mock_b2b_get):
+        """Similar products should include stock information."""
+        def side_effect(path, params=None):
+            if params and "ids" in str(params):
+                return (200, {"items": [{
+                    "id": self.product_id,
+                    "title": "Current Product",
+                    "category": {"id": self.category_id},
+                }]})
+            return (200, self._get_similar_response(self.product_id, self.category_id))
+
+        mock_b2b_get.side_effect = side_effect
+
+        response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
+
+        self.assertEqual(response.status_code, 200)
+        for item in response.data["items"]:
+            self.assertIn("has_stock", item)
+            self.assertIn("min_price", item)
+            self.assertIn("skus", item)
+            for sku in item["skus"]:
+                self.assertIn("available_quantity", sku)
+                self.assertIn("in_stock", sku)
+
+    @patch("catalog.views._b2b_get")
+    def test_similar_products_b2b_unavailable(self, mock_b2b_get):
+        """B2B unavailable should return 503."""
+        def side_effect(path, params=None):
+            if params and "ids" in str(params):
+                return (200, {"items": [{
+                    "id": self.product_id,
+                    "title": "Current Product",
+                    "category": {"id": self.category_id},
+                }]})
+            raise URLError("B2B unavailable")
+
+        mock_b2b_get.side_effect = side_effect
+
+        response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["code"], "B2B_UNAVAILABLE")
+
+    @patch("catalog.views._b2b_get")
+    def test_similar_products_b2b_error(self, mock_b2b_get):
+        """B2B error should return 502."""
+        def side_effect(path, params=None):
+            if params and "ids" in str(params):
+                return (200, {"items": [{
+                    "id": self.product_id,
+                    "title": "Current Product",
+                    "category": {"id": self.category_id},
+                }]})
+            return (403, {"error": "Forbidden"})
+
+        mock_b2b_get.side_effect = side_effect
+
+        response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.data["code"], "B2B_ERROR")
+
+    @patch("catalog.views._b2b_get")
+    def test_similar_products_no_category_fallback(self, mock_b2b_get):
+        """If product has no category, return empty list."""
+        def side_effect(path, params=None):
+            if params and "ids" in str(params):
+                return (200, {"items": [{
+                    "id": self.product_id,
+                    "title": "Current Product",
+                    "category": {},  # No category
+                }]})
+            # Second call would fail since category_id is empty
+            return (200, {"items": [], "total_count": 0, "limit": 8, "offset": 0})
+
+        mock_b2b_get.side_effect = side_effect
+
+        response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["items"], [])
+
+    @patch("catalog.views._b2b_get")
+    def test_similar_products_min_price_computation(self, mock_b2b_get):
+        """Similar products should compute min_price from available SKUs."""
+        def side_effect(path, params=None):
+            if params and "ids" in str(params):
+                return (200, {"items": [{
+                    "id": self.product_id,
+                    "title": "Current Product",
+                    "category": {"id": self.category_id},
+                }]})
+            items = [{
+                "id": "similar-1-id",
+                "title": "Similar Product",
+                "slug": "similar-product",
+                "description": "Similar item",
+                "status": "MODERATED",
+                "category": {"id": self.category_id, "name": "Смартфоны"},
+                "images": [{"url": "https://example.com/similar.jpg", "ordering": 0}],
+                "skus": [{
+                    "id": "sku-similar",
+                    "name": "Variant",
+                    "price": 9999000,
+                    "discount": 1000000,
+                    "image": "https://example.com/similar.jpg",
+                    "active_quantity": 10,
+                }],
+            }]
+            return (200, {"items": items, "total_count": 1, "limit": 8, "offset": 0})
+
+        mock_b2b_get.side_effect = side_effect
+
+        response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
+
+        self.assertEqual(response.status_code, 200)
+        similar = response.data["items"][0]
+        # min_price should be computed from sku price - discount
+        self.assertEqual(similar["min_price"], 8999000)
+        self.assertTrue(similar["has_stock"])

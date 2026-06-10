@@ -42,3 +42,15 @@ class ProductCardSerializer(serializers.Serializer):
         child=serializers.DictField(), default=list
     )
     skus = SKUCardSerializer(many=True)
+
+
+class SimilarProductSerializer(serializers.Serializer):
+    """Serializer for similar products (US-CAT-04)."""
+
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+    slug = serializers.CharField(allow_blank=True, default="")
+    min_price = serializers.IntegerField(allow_null=True)
+    has_stock = serializers.BooleanField()
+    images = ImageRefSerializer(many=True, default=list)
+    skus = SKUCardSerializer(many=True)

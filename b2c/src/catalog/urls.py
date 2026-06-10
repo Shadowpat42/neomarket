@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .views import ProductListView, ProductCardView, FacetsView
+from .views import ProductListView, ProductCardView, FacetsView, SimilarProductsView
 
 urlpatterns = [
     path(
@@ -12,6 +12,11 @@ urlpatterns = [
         "api/v1/catalog/products/<uuid:product_id>",
         ProductCardView.as_view(),
         name="product-card",
+    ),
+    path(
+        "api/v1/catalog/products/<uuid:product_id>/similar",
+        SimilarProductsView.as_view(),
+        name="similar-products",
     ),
     path(
         "api/v1/catalog/facets",

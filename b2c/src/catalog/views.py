@@ -5,8 +5,14 @@ US-CAT-01:
 - GET /api/v1/catalog/products
 - GET /api/v1/catalog/facets
 
+US-CAT-02:
+- GET /api/v1/catalog/products with search
+
 US-CAT-03:
 - GET /api/v1/catalog/products/{id}
+
+US-CAT-04:
+- GET /api/v1/catalog/products/{id}/similar
 """
 
 import json
@@ -19,13 +25,14 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from .serializers import ProductCardSerializer
+from .serializers import ProductCardSerializer, SimilarProductSerializer
 
 
 _B2B_BASE_URL = os.getenv("B2B_URL", "http://127.0.0.1:8001")
 _B2C_SERVICE_KEY = os.getenv("B2C_SERVICE_KEY", "b2c_service_key")
 
 ALLOWED_SORTS = ["price_asc", "price_desc", "popularity", "new"]
+MIN_SEARCH_LENGTH = 3
 
 
 def _b2b_get(path, params=None):
@@ -73,7 +80,7 @@ def _transform_product(raw):
     in_stock_skus = [sku for sku in skus if sku["in_stock"]]
 
     min_price = (
-        min(sku["price"] for sku in in_stock_skus if sku["price"] is not None)
+        min(sku["price"] - sku.get("discount", 0) for sku in in_stock_skus if sku["price"] is not None)
         if in_stock_skus
         else None
     )
@@ -107,6 +114,43 @@ def _product_short(product):
     }
 
 
+def _transform_similar_product(raw):
+    """Transform B2B product to B2C similar product format."""
+    skus_raw = raw.get("skus") or []
+
+    skus = []
+    for sku in skus_raw:
+        available_qty = int(sku.get("available_quantity", sku.get("active_quantity", 0)) or 0)
+
+        skus.append({
+            "id": sku.get("id"),
+            "name": sku.get("name"),
+            "price": sku.get("price"),
+            "discount": sku.get("discount", 0),
+            "image": sku.get("image"),
+            "available_quantity": available_qty,
+            "in_stock": available_qty > 0,
+        })
+
+    in_stock_skus = [sku for sku in skus if sku["in_stock"]]
+
+    min_price = (
+        min(sku["price"] - sku.get("discount", 0) for sku in in_stock_skus if sku["price"] is not None)
+        if in_stock_skus
+        else None
+    )
+
+    return {
+        "id": raw.get("id"),
+        "name": raw.get("title") or raw.get("name", ""),
+        "slug": raw.get("slug", ""),
+        "min_price": min_price,
+        "has_stock": bool(in_stock_skus),
+        "images": raw.get("images") or [],
+        "skus": skus,
+    }
+
+
 class ProductListView(APIView):
     def get(self, request):
         sort = request.query_params.get("sort", "new")
@@ -126,12 +170,28 @@ class ProductListView(APIView):
         limit = request.query_params.get("limit", 20)
         offset = request.query_params.get("offset", 0)
 
+        search = request.query_params.get("q") or request.query_params.get("search")
+        
+        # Validate search length for US-CAT-02
+        if search and len(search) < MIN_SEARCH_LENGTH:
+            return Response(
+                {
+                    "code": "SEARCH_QUERY_TOO_SHORT",
+                    "message": "Поисковый запрос должен содержать минимум 3 символа",
+                    "details": {
+                        "min_length": MIN_SEARCH_LENGTH,
+                        "actual_length": len(search),
+                    },
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         params = {
             "limit": limit,
             "offset": offset,
             "sort": sort,
             "category_id": request.query_params.get("category_id"),
-            "search": request.query_params.get("q") or request.query_params.get("search"),
+            "search": search,
             "min_price": request.query_params.get("min_price"),
             "max_price": request.query_params.get("max_price"),
         }
@@ -228,6 +288,116 @@ class ProductCardView(APIView):
 
         return Response(
             serializer.validated_data if serializer.validated_data else product,
+            status=status.HTTP_200_OK,
+        )
+
+
+class SimilarProductsView(APIView):
+    """US-CAT-04: Get similar products for a given product."""
+    
+    def get(self, request, product_id):
+        # First, get the product to find its category
+        try:
+            http_status, data = _b2b_get(
+                "/api/v1/public/products/",
+                params={"ids": str(product_id)},
+            )
+        except (URLError, OSError):
+            return Response(
+                {
+                    "code": "B2B_UNAVAILABLE",
+                    "message": "B2B сервис временно недоступен",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except HTTPError as exc:
+            return Response(
+                {
+                    "code": "B2B_ERROR",
+                    "message": f"Ошибка B2B: {exc.code}",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if http_status != 200:
+            return Response(
+                {
+                    "code": "B2B_ERROR",
+                    "message": f"Ошибка B2B: {http_status}",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        products = data.get("items", []) if isinstance(data, dict) else data
+
+        if not products:
+            return Response(
+                {
+                    "code": "PRODUCT_NOT_FOUND",
+                    "message": "Товар не найден",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        product = products[0]
+        category_id = product.get("category", {}).get("id")
+        product_title = product.get("title") or product.get("name", "")
+
+        # Try to get similar products from the same category
+        params = {
+            "limit": 8,
+            "offset": 0,
+            "category_id": category_id,
+        }
+
+        try:
+            http_status, data = _b2b_get("/api/v1/public/products/", params=params)
+        except (URLError, OSError):
+            return Response(
+                {
+                    "code": "B2B_UNAVAILABLE",
+                    "message": "B2B сервис временно недоступен",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except HTTPError as exc:
+            return Response(
+                {
+                    "code": "B2B_ERROR",
+                    "message": f"Ошибка B2B: {exc.code}",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if http_status != 200:
+            return Response(
+                {
+                    "code": "B2B_ERROR",
+                    "message": f"Ошибка B2B: {http_status}",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        similar_products_raw = data.get("items", []) if isinstance(data, dict) else data
+        
+        # Filter out the current product and transform
+        similar_products = []
+        for p in similar_products_raw:
+            if str(p.get("id")) != str(product_id):
+                similar_products.append(_transform_similar_product(p))
+
+        # If we don't have enough products, try to get from parent category
+        # or just return what we have (could be empty)
+        if len(similar_products) < 8:
+            # Try to get more products from any category as fallback
+            # (B2B should handle parent category logic if needed)
+            pass
+
+        return Response(
+            {
+                "items": similar_products[:8],
+                "total_count": len(similar_products),
+            },
             status=status.HTTP_200_OK,
         )
 
