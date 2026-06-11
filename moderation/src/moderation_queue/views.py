@@ -180,18 +180,34 @@ class TicketApproveView(APIView):
         return Response(TicketResponseSerializer(ticket).data, status=status.HTTP_200_OK)
 
 
-# ── US-MOD-05: Block ticket (soft or hard) ────────────────────────────────────
+# ── US-MOD-04/05: Block ticket (soft or hard) ────────────────────────────────
+
+# Allowed field identifiers in FieldReport (flow-doc and B2B schema).
+# Using a reason with hard_block=True routes the decision to HARD_BLOCKED
+# (US-MOD-05) rather than returning a 400 — the type of block is delegated
+# to the blocking-reason catalogue so the endpoint stays unified.
+ALLOWED_FIELD_NAMES: frozenset[str] = frozenset(
+    {
+        "title",
+        "description",
+        "product_images",
+        "category",
+        "sku_name",
+        "sku_image",
+        "sku_price",
+    }
+)
+
 
 class TicketBlockView(APIView):
     """
     POST /api/v1/tickets/{ticket_id}/block
 
-    Blocks a product from the catalog. The type of block is determined by the
-    BlockingReason.hard_block flag:
-      hard_block=False → BLOCKED  (seller can correct and resubmit)
-      hard_block=True  → HARD_BLOCKED (terminal — no further seller action possible)
+    US-MOD-04 (soft block): blocking_reason.hard_block=False → status BLOCKED.
+      Seller sees the reason + field_reports and can resubmit after fixing.
+    US-MOD-05 (hard block): blocking_reason.hard_block=True  → HARD_BLOCKED (terminal).
 
-    On success, sends a BLOCKED event to B2B.
+    On success, sends BLOCKED event (hard_block=False|True) to B2B.
     If B2B call fails, rolls back the ticket to IN_REVIEW.
     """
 
@@ -251,8 +267,37 @@ class TicketBlockView(APIView):
         is_hard = any(r.hard_block for r in reasons)
         new_status = TicketStatus.HARD_BLOCKED if is_hard else TicketStatus.BLOCKED
         comment = request.data.get("comment")
-        field_reports_data = request.data.get("field_reports", [])
+        field_reports_raw = request.data.get("field_reports", [])
         primary_reason = reasons[0]
+
+        # ── 5b. Validate & normalise field_reports ────────────────────────────
+        # Accept both OpenAPI format {field_path, message} and
+        # flow-doc format {field_name, comment}.
+        field_reports_data = []
+        for fr in field_reports_raw:
+            field_ident = fr.get("field_name") or fr.get("field_path", "")
+            fr_comment = fr.get("comment") or fr.get("message", "")
+
+            if field_ident and field_ident not in ALLOWED_FIELD_NAMES:
+                return Response(
+                    {
+                        "code": "INVALID_FIELD_NAME",
+                        "message": (
+                            f"Unknown field_name '{field_ident}'. "
+                            f"Allowed: {sorted(ALLOWED_FIELD_NAMES)}"
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            field_reports_data.append(
+                {
+                    "field_path": field_ident,
+                    "message": fr_comment,
+                    "severity": fr.get("severity", "ERROR"),
+                    "sku_id": fr.get("sku_id"),
+                }
+            )
 
         # ── 6. Apply decision ─────────────────────────────────────────────────
         ticket.status = new_status
@@ -266,14 +311,14 @@ class TicketBlockView(APIView):
             ]
         )
 
-        # Replace field reports
+        # Replace field reports (field_reports_data is already normalised)
         ticket.field_reports.all().delete()
         for fr in field_reports_data:
             TicketFieldReport.objects.create(
                 ticket=ticket,
-                field_path=fr.get("field_path", ""),
-                message=fr.get("message", ""),
-                severity=fr.get("severity", "ERROR"),
+                field_path=fr["field_path"],
+                message=fr["message"],
+                severity=fr["severity"],
             )
 
         # ── 7. Notify B2B ─────────────────────────────────────────────────────
