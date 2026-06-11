@@ -411,11 +411,11 @@ class SimilarProductsTests(TestCase):
         response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data["items"]), 2)  # Excludes current product
-        self.assertEqual(response.data["total_count"], 2)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(len(response.data), 2)  # Excludes current product
 
         # Verify current product is excluded
-        for item in response.data["items"]:
+        for item in response.data:
             self.assertNotEqual(item["id"], self.product_id)
 
     @patch("catalog.views._b2b_get")
@@ -435,8 +435,8 @@ class SimilarProductsTests(TestCase):
         response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["items"], [])
-        self.assertEqual(response.data["total_count"], 0)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data, [])
 
     @patch("catalog.views._b2b_get")
     def test_unknown_product_returns_404(self, mock_b2b_get):
@@ -465,7 +465,8 @@ class SimilarProductsTests(TestCase):
         response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
 
         self.assertEqual(response.status_code, 200)
-        product_ids = [item["id"] for item in response.data["items"]]
+        self.assertIsInstance(response.data, list)
+        product_ids = [item["id"] for item in response.data]
         self.assertNotIn(self.product_id, product_ids)
 
     @patch("catalog.views._b2b_get")
@@ -509,7 +510,8 @@ class SimilarProductsTests(TestCase):
         response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
 
         self.assertEqual(response.status_code, 200)
-        self.assertLessEqual(len(response.data["items"]), 8)
+        self.assertIsInstance(response.data, list)
+        self.assertLessEqual(len(response.data), 8)
 
     @patch("catalog.views._b2b_get")
     def test_similar_products_with_stock_info(self, mock_b2b_get):
@@ -528,7 +530,8 @@ class SimilarProductsTests(TestCase):
         response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
 
         self.assertEqual(response.status_code, 200)
-        for item in response.data["items"]:
+        self.assertIsInstance(response.data, list)
+        for item in response.data:
             self.assertIn("has_stock", item)
             self.assertIn("min_price", item)
             self.assertIn("skus", item)
@@ -592,7 +595,8 @@ class SimilarProductsTests(TestCase):
         response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["items"], [])
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data, [])
 
     @patch("catalog.views._b2b_get")
     def test_similar_products_min_price_computation(self, mock_b2b_get):
@@ -628,7 +632,8 @@ class SimilarProductsTests(TestCase):
         response = self.client.get(f"/api/v1/catalog/products/{self.product_id}/similar")
 
         self.assertEqual(response.status_code, 200)
-        similar = response.data["items"][0]
+        self.assertIsInstance(response.data, list)
+        similar = response.data[0]
         # min_price should be computed from sku price - discount
         self.assertEqual(similar["min_price"], 8999000)
         self.assertTrue(similar["has_stock"])

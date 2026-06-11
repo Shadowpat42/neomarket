@@ -388,7 +388,7 @@ class CancelOrderView(APIView):
                 status.HTTP_409_CONFLICT,
                 details={
                     "current_status": order.status,
-                    "allowed_statuses": ["CREATED", "PAID"],
+                    "allowed_statuses": ["CREATED", "PAID", "ASSEMBLING"],
                 },
             )
 
