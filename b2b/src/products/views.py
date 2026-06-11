@@ -139,7 +139,7 @@ class ProductDetailView(APIView):
 
         try:
             send_product_moderation_event(
-                event="DELETED",
+                event_type="DELETED",
                 product_id=product.id,
                 seller_id=product.seller_id,
                 idempotency_key=uuid.uuid4(),

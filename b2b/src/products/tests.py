@@ -298,7 +298,7 @@ class DeleteProductTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         mock_send.assert_called_once()
         call_args = mock_send.call_args
-        self.assertEqual(call_args[1]["event"], "DELETED")
+        self.assertEqual(call_args[1]["event_type"], "DELETED")
         self.assertEqual(call_args[1]["product_id"], product.id)
 
     def test_delete_emits_product_deleted_to_b2c(self):
