@@ -393,13 +393,7 @@ class SimilarProductsView(APIView):
             # (B2B should handle parent category logic if needed)
             pass
 
-        return Response(
-            {
-                "items": similar_products[:8],
-                "total_count": len(similar_products),
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response(similar_products[:8], status=status.HTTP_200_OK)
 
 
 class FacetsView(APIView):
