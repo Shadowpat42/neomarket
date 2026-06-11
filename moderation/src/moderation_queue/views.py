@@ -12,11 +12,18 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 import b2b_client
-from .models import BlockingReason, Ticket, TicketFieldReport, TicketStatus
+from .models import (
+    BlockingReason,
+    IncomingEventLog,
+    Ticket,
+    TicketFieldReport,
+    TicketKind,
+    TicketStatus,
+)
 from .serializers import TicketResponseSerializer
 
 
-# ── B2B helper (module-level so tests can patch it) ───────────────────────────
+# ── Helpers (module-level → mockable in tests) ────────────────────────────────
 
 def _fetch_sku_count(product_id: str) -> int | None:
     """
@@ -39,7 +46,34 @@ def _fetch_sku_count(product_id: str) -> int | None:
         return None
 
 
-# ── Shared guard ──────────────────────────────────────────────────────────────
+def _fetch_product_json(product_id: str) -> dict | None:
+    """
+    Fetch a fresh product snapshot from B2B for json_after storage.
+    Returns None on any network / parse failure (caller decides how to handle).
+    """
+    b2b_url = os.getenv("B2B_URL", "http://b2b:8001").rstrip("/")
+    mod_key = os.getenv("MOD_TO_B2B_KEY", "mod_to_b2b_key")
+    endpoint = f"{b2b_url}/api/v1/products/{product_id}"
+    req = urlrequest.Request(
+        endpoint,
+        method="GET",
+        headers={"X-Service-Key": mod_key},
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=3) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _log_event(idempotency_key: str | None, event_type: str, product_id: str) -> None:
+    """Persist idempotency record if a key was provided."""
+    if idempotency_key:
+        IncomingEventLog.objects.get_or_create(
+            idempotency_key=idempotency_key,
+            defaults={"event_type": event_type, "product_id": product_id},
+        )
+
 
 def _terminal_response():
     """Return 403 for any attempt to mutate a HARD_BLOCKED ticket."""
@@ -276,37 +310,48 @@ class TicketBlockView(APIView):
         return Response(TicketResponseSerializer(ticket).data, status=status.HTTP_200_OK)
 
 
-# ── Incoming B2B events ───────────────────────────────────────────────────────
+# ── US-MOD-01: Incoming B2B events ───────────────────────────────────────────
 
 class B2BEventView(APIView):
     """
-    POST /api/v1/b2b/events
+    POST /api/v1/b2b/events  (OpenAPI: IncomingB2BEvent)
 
-    Receives product lifecycle events from B2B:
-      PRODUCT_CREATED  — create a new moderation ticket (PENDING)
-      PRODUCT_EDITED   — create an EDIT ticket, unless the product is HARD_BLOCKED
-                         (HARD_BLOCKED is terminal → event is silently acknowledged)
-      PRODUCT_DELETED  — remove all moderation records for the product
+    Receives product lifecycle events from B2B and manages moderation tickets:
 
-    Auth: X-Service-Key header checked against settings.B2B_TO_MOD_KEY.
+      PRODUCT_CREATED — create a new PENDING ticket with json_after snapshot.
+      PRODUCT_EDITED  — reset existing ticket to PENDING for re-review;
+                        HARD_BLOCKED products are silently ignored (terminal).
+      PRODUCT_DELETED — remove all moderation records for the product.
+
+    Auth:       X-Service-Key header, checked against settings.B2B_TO_MOD_KEY.
+    Idempotency: idempotency_key logged in IncomingEventLog; duplicate key → 202.
+
+    Queue-priority rules for PRODUCT_EDITED:
+      old status BLOCKED   → priority 2  (was already bad; urgent re-check)
+      old status APPROVED  → priority 3  (was OK; routine re-check)
+      old status PENDING / IN_REVIEW → keep current (seller re-edited mid-queue)
     """
 
     authentication_classes = []
     permission_classes = []
 
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    def _check_service_key(self, request) -> bool:
+        incoming = request.headers.get("X-Service-Key", "")
+        expected = getattr(settings, "B2B_TO_MOD_KEY", "b2b_to_mod_key")
+        return incoming == expected
+
     def post(self, request):
-        # ── Service-key auth ──────────────────────────────────────────────────
-        incoming_key = request.headers.get("X-Service-Key", "")
-        expected_key = getattr(settings, "B2B_TO_MOD_KEY", "b2b_to_mod_key")
-        if incoming_key != expected_key:
+        if not self._check_service_key(request):
             return Response(
-                {"code": "UNAUTHORIZED", "message": "Invalid service key"},
+                {"code": "UNAUTHORIZED", "message": "Invalid or missing service key"},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
         event_type = request.data.get("event_type")
-        payload = request.data.get("payload", {})
-        product_id = payload.get("product_id") if payload else None
+        idempotency_key = request.data.get("idempotency_key")
+        payload = request.data.get("payload") or {}
+        product_id = payload.get("product_id") or request.data.get("product_id")
 
         if not product_id:
             return Response(
@@ -314,26 +359,120 @@ class B2BEventView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ── PRODUCT_DELETED: purge all ticket records ──────────────────────────
+        seller_id = payload.get("seller_id") or request.data.get("seller_id")
+
+        # ── Idempotency ───────────────────────────────────────────────────────
+        if idempotency_key:
+            if IncomingEventLog.objects.filter(idempotency_key=idempotency_key).exists():
+                return Response(status=status.HTTP_202_ACCEPTED)
+
+        # ── PRODUCT_CREATED ───────────────────────────────────────────────────
+        if event_type == "PRODUCT_CREATED":
+            return self._handle_created(request, product_id, seller_id, payload, idempotency_key)
+
+        # ── PRODUCT_EDITED ────────────────────────────────────────────────────
+        if event_type == "PRODUCT_EDITED":
+            return self._handle_edited(request, product_id, payload, idempotency_key)
+
+        # ── PRODUCT_DELETED ───────────────────────────────────────────────────
         if event_type == "PRODUCT_DELETED":
             Ticket.objects.filter(product_id=product_id).delete()
-            return Response(status=status.HTTP_202_ACCEPTED)
-
-        # ── PRODUCT_EDITED: skip if HARD_BLOCKED (terminal) ───────────────────
-        if event_type == "PRODUCT_EDITED":
-            if Ticket.objects.filter(
-                product_id=product_id, status=TicketStatus.HARD_BLOCKED
-            ).exists():
-                # Terminal status — seller edits are legally/commercially irrelevant.
-                return Response(status=status.HTTP_202_ACCEPTED)
-            # Out of scope for US-MOD-05; create EDIT ticket in a future US.
-            return Response(status=status.HTTP_202_ACCEPTED)
-
-        # ── PRODUCT_CREATED: out of scope for US-MOD-05 ───────────────────────
-        if event_type == "PRODUCT_CREATED":
+            _log_event(idempotency_key, event_type, product_id)
             return Response(status=status.HTTP_202_ACCEPTED)
 
         return Response(
             {"code": "UNKNOWN_EVENT", "message": f"Unknown event_type: {event_type}"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    # ── CREATED handler ───────────────────────────────────────────────────────
+
+    def _handle_created(self, request, product_id, seller_id, payload, idempotency_key):
+        existing = (
+            Ticket.objects.filter(product_id=product_id)
+            .order_by("-created_at")
+            .first()
+        )
+        if existing:
+            if existing.is_terminal():
+                # HARD_BLOCKED is terminal — re-creation is irrelevant
+                return Response(status=status.HTTP_202_ACCEPTED)
+            return Response(
+                {
+                    "code": "DUPLICATE_CREATED",
+                    "message": "A moderation ticket already exists for this product",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Use json_after from payload; fallback to B2B fetch if empty
+        json_after = payload.get("json_after") or {}
+        if not json_after:
+            json_after = _fetch_product_json(str(product_id)) or {}
+
+        Ticket.objects.create(
+            product_id=product_id,
+            seller_id=seller_id or product_id,
+            category_id=payload.get("category_id"),
+            kind=TicketKind.CREATE,
+            status=TicketStatus.PENDING,
+            queue_priority=int(payload.get("queue_priority") or 3),
+            json_before=None,
+            json_after=json_after,
+        )
+
+        _log_event(idempotency_key, "PRODUCT_CREATED", product_id)
+        return Response(status=status.HTTP_202_ACCEPTED)
+
+    # ── EDITED handler ────────────────────────────────────────────────────────
+
+    def _handle_edited(self, request, product_id, payload, idempotency_key):
+        ticket = (
+            Ticket.objects.filter(product_id=product_id)
+            .order_by("-created_at")
+            .first()
+        )
+        if not ticket:
+            return Response(
+                {
+                    "code": "TICKET_NOT_FOUND",
+                    "message": "No moderation ticket found for this product",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if ticket.is_terminal():
+            # HARD_BLOCKED — seller edits are legally/commercially irrelevant
+            return Response(status=status.HTTP_202_ACCEPTED)
+
+        # Compute new queue_priority
+        old_status = ticket.status
+        if old_status == TicketStatus.BLOCKED:
+            new_priority = 2
+        elif old_status == TicketStatus.APPROVED:
+            new_priority = 3
+        else:
+            # PENDING or IN_REVIEW — keep current priority (seller re-edited mid-queue)
+            new_priority = ticket.queue_priority
+
+        json_after = payload.get("json_after") or {}
+        if not json_after:
+            json_after = _fetch_product_json(str(product_id)) or {}
+
+        ticket.json_before = ticket.json_after
+        ticket.json_after = json_after
+        ticket.status = TicketStatus.PENDING
+        ticket.queue_priority = new_priority
+        ticket.assigned_moderator = None
+        ticket.claimed_at = None
+        ticket.claim_expires_at = None
+        ticket.save(
+            update_fields=[
+                "json_before", "json_after", "status", "queue_priority",
+                "assigned_moderator", "claimed_at", "claim_expires_at", "updated_at",
+            ]
+        )
+        ticket.field_reports.all().delete()
+
+        _log_event(idempotency_key, "PRODUCT_EDITED", product_id)
+        return Response(status=status.HTTP_202_ACCEPTED)

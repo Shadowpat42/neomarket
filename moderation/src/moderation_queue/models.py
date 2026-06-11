@@ -94,6 +94,24 @@ class Ticket(models.Model):
         return self.status in TicketStatus.terminal_statuses()
 
 
+class IncomingEventLog(models.Model):
+    """
+    Idempotency log for incoming B2B events.
+
+    Keyed on idempotency_key supplied by the caller (B2B).
+    A second request with the same key is acknowledged immediately (202)
+    without re-processing, preventing duplicate ticket creation/updates.
+    """
+
+    idempotency_key = models.UUIDField(primary_key=True)
+    event_type = models.CharField(max_length=50)
+    product_id = models.UUIDField(db_index=True)
+    processed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["product_id", "processed_at"])]
+
+
 class TicketFieldReport(models.Model):
     """
     Inline annotation for a specific field that was found invalid.
