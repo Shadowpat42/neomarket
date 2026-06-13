@@ -298,7 +298,7 @@ class DeleteProductTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         mock_send.assert_called_once()
         call_args = mock_send.call_args
-        self.assertEqual(call_args[1]["event_type"], "DELETED")
+        self.assertEqual(call_args[1]["event_type"], "PRODUCT_DELETED")
         self.assertEqual(call_args[1]["product_id"], product.id)
 
     def test_delete_emits_product_deleted_to_b2c(self):
@@ -347,7 +347,7 @@ class DeleteProductTests(APITestCase):
         self.assertEqual(response.data["code"], "INVALID_REQUEST")
 
     def test_deleted_product_not_in_seller_list(self):
-        """B2B-4: Deleted product is visible in seller list with deleted=true flag."""
+        """B2B-4: Deleted product is excluded from seller list by default (include_deleted omitted)."""
         product = Product.objects.create(
             seller_id=self.user.id,
             category=self.category,
@@ -358,13 +358,19 @@ class DeleteProductTests(APITestCase):
         )
         Image.objects.create(product=product, url="/s3/iphone.jpg", ordering=0)
 
+        # Without include_deleted=true → deleted product must be absent
         response = self.client.get("/api/v1/products/my")
-
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        items = response.data
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["id"], str(product.id))
-        self.assertTrue(items[0]["deleted"])
+        ids = [item["id"] for item in response.data]
+        self.assertNotIn(str(product.id), ids)
+
+        # With include_deleted=true → deleted product must be present
+        response_with = self.client.get("/api/v1/products/my?include_deleted=true")
+        self.assertEqual(response_with.status_code, status.HTTP_200_OK)
+        ids_with = [item["id"] for item in response_with.data]
+        self.assertIn(str(product.id), ids_with)
+        match = next(i for i in response_with.data if i["id"] == str(product.id))
+        self.assertTrue(match["deleted"])
 
     def test_delete_others_product_returns_403(self):
         """B2B-4: Deleting another seller's product returns 403."""

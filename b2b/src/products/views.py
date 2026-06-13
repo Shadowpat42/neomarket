@@ -139,7 +139,7 @@ class ProductDetailView(APIView):
 
         try:
             send_product_moderation_event(
-                event_type="DELETED",
+                event_type="PRODUCT_DELETED",
                 product_id=product.id,
                 seller_id=product.seller_id,
                 idempotency_key=uuid.uuid4(),
@@ -164,8 +164,11 @@ class ProductListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        products = Product.objects.filter(seller_id=request.user.id)
-        serializer = ProductSerializer(products, many=True)
+        qs = Product.objects.filter(seller_id=request.user.id)
+        include_deleted = request.query_params.get("include_deleted", "false").lower()
+        if include_deleted != "true":
+            qs = qs.filter(deleted=False)
+        serializer = ProductSerializer(qs, many=True)
         return Response(serializer.data)
 
 class ProductCatalogView(APIView):

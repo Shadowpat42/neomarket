@@ -127,8 +127,10 @@ class SoftBlockTests(APITestCase):
     @patch("b2b_client.send_blocked_event")
     def test_soft_block_emits_event_to_b2b(self, mock_send):
         """
-        The B2B notification must carry hard_block=False so B2B sets
-        product.status = BLOCKED (reversible), not HARD_BLOCKED.
+        The B2B notification must carry:
+          hard_block=False  (reversible block)
+          blocking_reason   with correct id
+          field_reports     in B2B contract format {field_name, comment}
         """
         self.client.force_authenticate(user=self.moderator)
 
@@ -137,16 +139,30 @@ class SoftBlockTests(APITestCase):
             {
                 "blocking_reason_ids": [str(self.soft_reason.id)],
                 "comment": "Нарушения в описании",
-                "field_reports": [],
+                "field_reports": [
+                    {"field_name": "description", "comment": "Описание скопировано"},
+                ],
             },
             format="json",
         )
 
         mock_send.assert_called_once()
         _, kwargs = mock_send.call_args
+
+        # hard_block flag
         self.assertFalse(kwargs["hard_block"])
+
+        # product identity
         self.assertEqual(str(kwargs["product_id"]), str(self.ticket.product_id))
+
+        # blocking_reason is passed as model instance (b2b_client extracts .id)
         self.assertEqual(kwargs["blocking_reason"].id, self.soft_reason.id)
+
+        # field_reports normalised to {field_path, message} by views.py
+        # b2b_client is responsible for converting to {field_name, comment} on the wire
+        fr = kwargs["field_reports"][0]
+        self.assertIn("field_path", fr)   # internal normalised key
+        self.assertEqual(fr["field_path"], "description")
 
     # ── unhappy: non-existent blocking reason ─────────────────────────────────
 
@@ -166,7 +182,8 @@ class SoftBlockTests(APITestCase):
             format="json",
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "BLOCKING_REASON_NOT_FOUND")
         mock_send.assert_not_called()
         self.ticket.refresh_from_db()
         self.assertEqual(self.ticket.status, TicketStatus.IN_REVIEW)
