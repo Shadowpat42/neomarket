@@ -11,6 +11,7 @@ from .models import SKU, SKUImage
 from .serializers import (
     SKUSerializer,
     SKUUpdateSerializer,
+    SKUPutSerializer,
     SKUImageSerializer,
     SKUImageUpdateSerializer,
 )
@@ -92,6 +93,58 @@ class SKUDetailView(APIView):
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        return Response(SKUSerializer(sku).data, status=status.HTTP_200_OK)
+
+    def _sku_not_found(self):
+        return Response(
+            {"code": "NOT_FOUND", "message": "SKU not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    def put(self, request, sku_id):
+        sku = self.get_object(sku_id)
+        if sku is None:
+            return self._sku_not_found()
+
+        product = sku.product
+
+        if str(product.seller_id) != str(request.user.id):
+            return Response(
+                {
+                    "code": "NOT_OWNER",
+                    "message": "Product does not belong to the authenticated seller",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if product.status == BaseProductStatus.HARD_BLOCKED:
+            return Response(
+                {
+                    "code": "FORBIDDEN",
+                    "message": "Cannot edit hard-blocked product",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = SKUPutSerializer(sku, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        sku = serializer.save()
+
+        # MODERATED or BLOCKED → re-queue for moderation
+        if product.status in {BaseProductStatus.MODERATED, BaseProductStatus.BLOCKED}:
+            product.status = BaseProductStatus.ON_MODERATION
+            product.save(update_fields=["status"])
+            try:
+                send_product_moderation_event(
+                    event_type="PRODUCT_EDITED",
+                    product_id=product.id,
+                    seller_id=product.seller_id,
+                    idempotency_key=uuid.uuid4(),
+                    occurred_at=timezone.now(),
+                )
+            except Exception:
+                pass
 
         return Response(SKUSerializer(sku).data, status=status.HTTP_200_OK)
 

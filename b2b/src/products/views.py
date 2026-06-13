@@ -92,11 +92,55 @@ class ProductDetailView(APIView):
     def _hard_blocked_response(self):
         return Response(
             {
-                "code": "HARD_BLOCKED",
-                "message": "Товар заблокирован администратором и не может быть изменён",
+                "code": "FORBIDDEN",
+                "message": "Cannot edit hard-blocked product",
             },
             status=status.HTTP_403_FORBIDDEN,
         )
+
+    def _not_owner_response(self):
+        return Response(
+            {
+                "code": "NOT_OWNER",
+                "message": "Product does not belong to the authenticated seller",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    def put(self, request, product_id):
+        product = self.get_object(product_id)
+        if product is None:
+            return self._product_not_found_response()
+
+        if str(product.seller_id) != str(request.user.id):
+            return self._not_owner_response()
+
+        if product.status == BaseProductStatus.HARD_BLOCKED:
+            return self._hard_blocked_response()
+
+        old_status = product.status
+
+        serializer = ProductSerializer(product, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        product = serializer.save()
+
+        # MODERATED or BLOCKED → re-queue for moderation
+        if old_status in {BaseProductStatus.MODERATED, BaseProductStatus.BLOCKED}:
+            product.status = BaseProductStatus.ON_MODERATION
+            product.save(update_fields=["status"])
+            try:
+                send_product_moderation_event(
+                    event_type="PRODUCT_EDITED",
+                    product_id=product.id,
+                    seller_id=product.seller_id,
+                    idempotency_key=uuid.uuid4(),
+                    occurred_at=timezone.now(),
+                )
+            except Exception:
+                pass
+
+        return Response(ProductDetailSerializer(self.get_object(product_id)).data,
+                        status=status.HTTP_200_OK)
 
     def patch(self, request, product_id):
         product = self.get_object(product_id)
