@@ -149,6 +149,53 @@ class SKUUpdateSerializer(serializers.ModelSerializer):
         fields = ["name", "price", "discount", "cost_price", "article"]
 
 
+class SKUPutSerializer(serializers.Serializer):
+    """
+    Full replacement serializer for PUT /api/v1/skus/{id}.
+    Like POST /skus but without product_id; reserved_quantity is never touched.
+    """
+
+    name = serializers.CharField(required=True, max_length=255)
+    price = serializers.IntegerField(required=True, min_value=1)
+    cost_price = serializers.IntegerField(required=True, min_value=1)
+    discount = serializers.IntegerField(required=False, min_value=0, default=0)
+    image = serializers.URLField(write_only=True, required=False)
+    images = SKUImageSerializer(many=True, required=False)
+    characteristics = SKUCharacteristicSerializer(many=True, required=False)
+
+    def validate(self, attrs):
+        images_data = list(attrs.get("images") or [])
+        image_url = attrs.pop("image", None)
+
+        if not images_data and image_url:
+            images_data = [{"url": image_url, "ordering": 0}]
+        if not images_data:
+            raise serializers.ValidationError({"image": "image is required"})
+
+        attrs["images"] = images_data
+        return attrs
+
+    def update(self, instance, validated_data):
+        images_data = validated_data.pop("images", None)
+        characteristics_data = validated_data.pop("characteristics", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if images_data is not None:
+            instance.images.all().delete()
+            for img in images_data:
+                SKUImage.objects.create(sku=instance, **img)
+
+        if characteristics_data is not None:
+            instance.characteristics.all().delete()
+            for char in characteristics_data:
+                SKUCharacteristic.objects.create(sku=instance, **char)
+
+        return instance
+
+
 class SKUImageUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = SKUImage

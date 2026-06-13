@@ -158,7 +158,7 @@ class ModerationEventTests(APITestCase):
             format="json",
         )
         self.assertEqual(patch_resp.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(patch_resp.data["code"], "HARD_BLOCKED")
+        self.assertEqual(patch_resp.data["code"], "FORBIDDEN")
 
         delete_resp = self.client.delete(f"/api/v1/products/{self.product.id}/")
         self.assertEqual(delete_resp.status_code, status.HTTP_403_FORBIDDEN)
