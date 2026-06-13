@@ -20,6 +20,7 @@ from .models import (
 from .permissions import IsSellerOrServiceKey, IsB2CServiceKey, IsModerationServiceKey
 from .serializers import (
     ProductSerializer,
+    ProductShortSerializer,
     CategorySerializer,
     ProductDetailSerializer,
     PublicProductSerializer,
@@ -32,7 +33,69 @@ from django.utils import timezone
 
 
 class ProductListCreateView(APIView):
+    """
+    GET  /api/v1/products  — seller cabinet list (JWT required)
+    POST /api/v1/products  — create product
+    """
+
     permission_classes = [IsAuthenticated]
+
+    # Allowed status values for the ?status= filter
+    _VALID_STATUSES = {
+        BaseProductStatus.CREATED,
+        BaseProductStatus.ON_MODERATION,
+        BaseProductStatus.MODERATED,
+        BaseProductStatus.BLOCKED,
+        BaseProductStatus.HARD_BLOCKED,
+    }
+
+    def get(self, request):
+        # seller_id is ALWAYS taken from JWT — any ?seller_id param is silently ignored
+        qs = (
+            Product.objects
+            .filter(seller_id=request.user.id)
+            .select_related("category")
+            .prefetch_related("skus", "images")
+        )
+
+        # include_deleted (default: false)
+        if request.query_params.get("include_deleted", "false").lower() != "true":
+            qs = qs.filter(deleted=False)
+
+        # status filter
+        status_param = request.query_params.get("status", "").strip()
+        if status_param:
+            if status_param not in self._VALID_STATUSES:
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": f"Unknown status: {status_param}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(status=status_param)
+
+        # search (case-insensitive, title)
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(title__icontains=search)
+
+        # pagination
+        try:
+            limit = max(1, min(100, int(request.query_params.get("limit", 20))))
+            offset = max(0, int(request.query_params.get("offset", 0)))
+        except (TypeError, ValueError):
+            limit, offset = 20, 0
+
+        total_count = qs.count()
+        page = qs[offset: offset + limit]
+
+        return Response(
+            {
+                "items": ProductShortSerializer(page, many=True).data,
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     def post(self, request):
         serializer = ProductSerializer(data=request.data)
