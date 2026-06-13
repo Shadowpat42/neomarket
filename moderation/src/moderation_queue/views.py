@@ -260,8 +260,8 @@ class TicketBlockView(APIView):
         )
         if len(reasons) != len(reason_ids):
             return Response(
-                {"code": "NOT_FOUND", "message": "One or more blocking reasons not found"},
-                status=status.HTTP_404_NOT_FOUND,
+                {"code": "BLOCKING_REASON_NOT_FOUND", "message": "One or more blocking reasons not found"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         is_hard = any(r.hard_block for r in reasons)

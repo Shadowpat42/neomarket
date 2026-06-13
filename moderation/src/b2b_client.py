@@ -62,6 +62,7 @@ def send_moderated_event(
             "idempotency_key": str(idempotency_key or uuid_lib.uuid4()),
             "product_id": str(product_id),
             "event_type": "MODERATED",
+            "occurred_at": _now_iso(),
             "moderator_comment": moderator_comment,
         }
     )
@@ -84,22 +85,26 @@ def send_blocked_event(
 
     Raises URLError / OSError on network failure so the caller can roll back.
     """
-    reason_payload = None
-    if blocking_reason is not None:
-        reason_payload = {
-            "id": str(blocking_reason.id),
-            "title": blocking_reason.title,
-            "comment": comment or "",
+    # Convert internal field_reports format {field_path, message} →
+    # B2B contract format {field_name, comment} (b2b/openapi.yaml FieldReport schema).
+    b2b_field_reports = [
+        {
+            "field_name": fr.get("field_path") or fr.get("field_name", ""),
+            "comment": fr.get("message") or fr.get("comment", ""),
+            **({"sku_id": fr["sku_id"]} if fr.get("sku_id") else {}),
         }
+        for fr in (field_reports or [])
+    ]
 
     _post(
         {
             "idempotency_key": str(idempotency_key or uuid_lib.uuid4()),
             "product_id": str(product_id),
             "event_type": "BLOCKED",
+            "occurred_at": _now_iso(),
             "hard_block": hard_block,
-            "blocking_reason": reason_payload,
+            "blocking_reason_id": str(blocking_reason.id) if blocking_reason else None,
             "moderator_comment": comment,
-            "field_reports": field_reports or [],
+            "field_reports": b2b_field_reports,
         }
     )
