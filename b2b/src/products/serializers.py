@@ -186,6 +186,55 @@ class ProductCategoryBriefSerializer(serializers.ModelSerializer):
         fields = ["id", "name"]
 
 
+class ProductShortSerializer(serializers.ModelSerializer):
+    """
+    Seller-cabinet list item (GET /api/v1/products).
+    Matches ProductShortResponse in OpenAPI; also adds skus_count and
+    total_active_quantity required by US-B2B-11 DoD.
+    Expects skus and images to be pre-fetched on the queryset.
+    """
+
+    category = ProductCategoryBriefSerializer(read_only=True)
+    min_price = serializers.SerializerMethodField()
+    cover_image = serializers.SerializerMethodField()
+    skus_count = serializers.SerializerMethodField()
+    total_active_quantity = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "title",
+            "slug",
+            "status",
+            "category_id",
+            "category",
+            "deleted",
+            "created_at",
+            "min_price",
+            "cover_image",
+            "skus_count",
+            "total_active_quantity",
+        ]
+
+    def get_min_price(self, obj: Product) -> int | None:
+        prices = [sku.price for sku in obj.skus.all() if sku.price is not None]
+        return min(prices) if prices else None
+
+    def get_cover_image(self, obj: Product) -> str | None:
+        imgs = sorted(obj.images.all(), key=lambda i: i.ordering)
+        return imgs[0].url if imgs else None
+
+    def get_skus_count(self, obj: Product) -> int:
+        return len(obj.skus.all())
+
+    def get_total_active_quantity(self, obj: Product) -> int:
+        return sum(
+            max(0, (sku.stock_quantity or 0) - (sku.reserved_quantity or 0))
+            for sku in obj.skus.all()
+        )
+
+
 class ProductDetailImageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Image
