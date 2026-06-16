@@ -170,7 +170,7 @@ class ProductDetailView(APIView):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    def put(self, request, product_id):
+    def patch(self, request, product_id):
         product = self.get_object(product_id)
         if product is None:
             return self._product_not_found_response()
@@ -183,11 +183,20 @@ class ProductDetailView(APIView):
 
         old_status = product.status
 
-        serializer = ProductSerializer(product, data=request.data)
+        # Snapshot state before edit for moderation event
+        json_before = {
+            "id": str(product.id),
+            "title": product.title,
+            "description": product.description,
+            "status": product.status,
+            "category_id": str(product.category_id),
+        }
+
+        serializer = ProductSerializer(product, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         product = serializer.save()
 
-        # MODERATED or BLOCKED → re-queue for moderation
+        # MODERATED or BLOCKED → re-queue for moderation + PRODUCT_EDITED event
         if old_status in {BaseProductStatus.MODERATED, BaseProductStatus.BLOCKED}:
             product.status = BaseProductStatus.ON_MODERATION
             product.save(update_fields=["status"])
@@ -198,27 +207,15 @@ class ProductDetailView(APIView):
                     seller_id=product.seller_id,
                     idempotency_key=uuid.uuid4(),
                     occurred_at=timezone.now(),
+                    json_before=json_before,
                 )
             except Exception:
                 pass
 
-        return Response(ProductDetailSerializer(self.get_object(product_id)).data,
-                        status=status.HTTP_200_OK)
-
-    def patch(self, request, product_id):
-        product = self.get_object(product_id)
-
-        if product is None:
-            return self._product_not_found_response()
-        self._check_owner(product, request.user.id)
-
-        if product.status == BaseProductStatus.HARD_BLOCKED:
-            return self._hard_blocked_response()
-
-        serializer = ProductSerializer(product, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        product = serializer.save()
-        return Response(ProductSerializer(product).data, status=status.HTTP_200_OK)
+        return Response(
+            ProductDetailSerializer(self.get_object(product_id)).data,
+            status=status.HTTP_200_OK,
+        )
 
     def delete(self, request, product_id):
         product = self.get_object(product_id)
@@ -387,6 +384,28 @@ class CategoryListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         category = serializer.save()
         return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
+
+
+class PublicCategoryListView(APIView):
+    """
+    GET /api/v1/public/categories
+    Returns flat list of all categories for B2C service (X-Service-Key required).
+    B2C builds the tree client-side.
+    """
+
+    permission_classes = [IsB2CServiceKey]
+
+    def get(self, request):
+        categories = Category.objects.all().order_by("name")
+        data = [
+            {
+                "id": str(c.id),
+                "name": c.name,
+                "parent_id": str(c.parent_id) if c.parent_id else None,
+            }
+            for c in categories
+        ]
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class CategoryDetailView(APIView):

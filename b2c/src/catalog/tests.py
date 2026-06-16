@@ -637,3 +637,142 @@ class SimilarProductsTests(TestCase):
         # min_price should be computed from sku price - discount
         self.assertEqual(similar["min_price"], 8999000)
         self.assertTrue(similar["has_stock"])
+
+
+# ── US-CAT-05: Category navigation ─────────────────────────────────────────
+
+# Reusable flat category fixture
+ELECTRONICS_ID = "aaaa0001-0000-0000-0000-000000000001"
+SMARTPHONES_ID = "bbbb0002-0000-0000-0000-000000000002"
+ANDROID_ID = "cccc0003-0000-0000-0000-000000000003"
+
+FLAT_CATEGORIES = [
+    {"id": ELECTRONICS_ID, "name": "Электроника", "parent_id": None},
+    {"id": SMARTPHONES_ID, "name": "Смартфоны", "parent_id": ELECTRONICS_ID},
+    {"id": ANDROID_ID, "name": "Android", "parent_id": SMARTPHONES_ID},
+]
+
+
+class CategoryTreeTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    @patch("catalog.views._b2b_get")
+    def test_category_tree_returns_nested_structure(self, mock_b2b_get):
+        """
+        GET /api/v1/categories builds a nested tree from B2B flat list.
+        Электроника → Смартфоны → Android
+        """
+        mock_b2b_get.return_value = (200, FLAT_CATEGORIES)
+
+        resp = self.client.get("/api/v1/categories")
+        self.assertEqual(resp.status_code, 200)
+
+        items = resp.data["items"]
+        self.assertEqual(len(items), 1, "One root category expected")
+        root = items[0]
+        self.assertEqual(root["id"], ELECTRONICS_ID)
+        self.assertEqual(len(root["children"]), 1)
+
+        smartphones = root["children"][0]
+        self.assertEqual(smartphones["id"], SMARTPHONES_ID)
+        self.assertEqual(len(smartphones["children"]), 1)
+        self.assertEqual(smartphones["children"][0]["id"], ANDROID_ID)
+
+    @patch("catalog.views._b2b_get")
+    def test_unknown_category_returns_404(self, mock_b2b_get):
+        """
+        GET /api/v1/categories/{id} for a non-existent category → 404.
+        """
+        mock_b2b_get.return_value = (200, FLAT_CATEGORIES)
+        unknown_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+        resp = self.client.get(f"/api/v1/categories/{unknown_id}")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.data["code"], "NOT_FOUND")
+
+    @patch("catalog.views._b2b_get")
+    def test_orphan_node_returns_422(self, mock_b2b_get):
+        """
+        GET /api/v1/categories with a node whose parent_id doesn't exist → 422.
+        """
+        orphan_flat = [
+            {"id": ELECTRONICS_ID, "name": "Электроника", "parent_id": None},
+            # parent_id refers to a non-existent category
+            {
+                "id": ANDROID_ID,
+                "name": "Android",
+                "parent_id": "dddd9999-dead-beef-0000-000000000000",
+            },
+        ]
+        mock_b2b_get.return_value = (200, orphan_flat)
+
+        resp = self.client.get("/api/v1/categories")
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.data["error"], "orphan_node")
+
+
+class BreadcrumbsTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    @patch("catalog.views._b2b_get")
+    def test_breadcrumbs_return_path_from_root(self, mock_b2b_get):
+        """
+        GET /api/v1/breadcrumbs?category_id=ANDROID_ID
+        Returns [Электроника(0), Смартфоны(1), Android(2, is_current)]
+        """
+        mock_b2b_get.return_value = (200, FLAT_CATEGORIES)
+
+        resp = self.client.get(f"/api/v1/breadcrumbs?category_id={ANDROID_ID}")
+        self.assertEqual(resp.status_code, 200)
+
+        crumbs = resp.data["data"]
+        self.assertEqual(len(crumbs), 3)
+        self.assertEqual(crumbs[0]["id"], ELECTRONICS_ID)
+        self.assertEqual(crumbs[0]["level"], 0)
+        self.assertFalse(crumbs[0]["is_current"])
+        self.assertEqual(crumbs[2]["id"], ANDROID_ID)
+        self.assertEqual(crumbs[2]["level"], 2)
+        self.assertTrue(crumbs[2]["is_current"])
+
+        meta = resp.data["meta"]
+        self.assertEqual(meta["resolved_via"], "category_id")
+        self.assertEqual(meta["category_id"], ANDROID_ID)
+
+    def test_ambiguous_params_returns_400(self):
+        """
+        Providing both category_id and product_id → 400 ambiguous_param.
+        """
+        resp = self.client.get(
+            "/api/v1/breadcrumbs",
+            {"category_id": ANDROID_ID, "product_id": PRODUCT_ID},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "ambiguous_param")
+
+    def test_missing_params_returns_400(self):
+        """
+        Neither category_id nor product_id → 400 missing_param.
+        """
+        resp = self.client.get("/api/v1/breadcrumbs")
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "missing_param")
+
+    @patch("catalog.views._b2b_get")
+    def test_orphan_node_returns_422_in_breadcrumbs(self, mock_b2b_get):
+        """
+        Broken category hierarchy during breadcrumb traversal → 422.
+        """
+        orphan_flat = [
+            {
+                "id": ANDROID_ID,
+                "name": "Android",
+                "parent_id": "dddd9999-dead-beef-0000-000000000000",  # missing parent
+            },
+        ]
+        mock_b2b_get.return_value = (200, orphan_flat)
+
+        resp = self.client.get(f"/api/v1/breadcrumbs?category_id={ANDROID_ID}")
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.data["error"], "orphan_node")

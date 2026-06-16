@@ -24,13 +24,18 @@ def send_product_moderation_event(
     seller_id: Any,
     idempotency_key: uuid_lib.UUID,
     occurred_at: datetime | None = None,
+    json_before: dict | None = None,
     json_after: dict | None = None,
 ) -> None:
     """
     Best-effort synchronous POST to Moderation Service.
 
     Sends to POST /api/v1/b2b/events with IncomingB2BEvent schema:
-        {event_type, idempotency_key, occurred_at, payload: {product_id, seller_id, json_after}}
+        {event_type, idempotency_key, occurred_at,
+         payload: {product_id, seller_id, json_before, json_after}}
+
+    json_before — product snapshot BEFORE the edit (required for PRODUCT_EDITED).
+    json_after  — product snapshot AFTER the edit (optional, for context).
 
     In production this should use the outbox pattern for guaranteed delivery.
     """
@@ -47,6 +52,7 @@ def send_product_moderation_event(
         "payload": {
             "product_id": str(product_id),
             "seller_id": str(seller_id),
+            "json_before": json_before or {},
             "json_after": json_after or {},
         },
     }

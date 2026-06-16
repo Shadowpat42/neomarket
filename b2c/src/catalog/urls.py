@@ -1,6 +1,14 @@
 from django.urls import path
 
-from .views import ProductListView, ProductCardView, FacetsView, SimilarProductsView
+from .views import (
+    ProductListView,
+    ProductCardView,
+    FacetsView,
+    SimilarProductsView,
+    CategoryTreeView,
+    CategoryDetailView,
+    BreadcrumbsView,
+)
 
 urlpatterns = [
     path(
@@ -22,5 +30,21 @@ urlpatterns = [
         "api/v1/catalog/facets",
         FacetsView.as_view(),
         name="catalog-facets",
+    ),
+    # US-CAT-05: категории и навигация
+    path(
+        "api/v1/categories",
+        CategoryTreeView.as_view(),
+        name="category-tree",
+    ),
+    path(
+        "api/v1/categories/<uuid:category_id>",
+        CategoryDetailView.as_view(),
+        name="category-detail",
+    ),
+    path(
+        "api/v1/breadcrumbs",
+        BreadcrumbsView.as_view(),
+        name="breadcrumbs",
     ),
 ]

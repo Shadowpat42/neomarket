@@ -27,6 +27,8 @@ from rest_framework import status
 
 from .serializers import ProductCardSerializer, SimilarProductSerializer
 
+_B2B_CATEGORIES_URL = "/api/v1/public/categories"
+
 
 _B2B_BASE_URL = os.getenv("B2B_URL", "http://127.0.0.1:8001")
 _B2C_SERVICE_KEY = os.getenv("B2C_SERVICE_KEY", "b2c_service_key")
@@ -394,6 +396,242 @@ class SimilarProductsView(APIView):
             pass
 
         return Response(similar_products[:8], status=status.HTTP_200_OK)
+
+
+def _fetch_flat_categories() -> list[dict]:
+    """Fetch flat category list from B2B. Returns [{id, name, parent_id}]."""
+    _, data = _b2b_get(_B2B_CATEGORIES_URL)
+    return data if isinstance(data, list) else []
+
+
+def _build_tree(flat: list[dict]) -> list[dict]:
+    """
+    Build a nested tree from a flat [{id, name, parent_id}] list.
+    Raises ValueError('orphan_node') if any node's parent_id is not in the list.
+    """
+    by_id = {c["id"]: dict(c, children=[]) for c in flat}
+
+    # Detect orphan nodes
+    for c in flat:
+        pid = c.get("parent_id")
+        if pid and pid not in by_id:
+            raise ValueError("orphan_node")
+
+    roots = []
+    for node in by_id.values():
+        pid = node.get("parent_id")
+        if pid:
+            by_id[pid]["children"].append(node)
+        else:
+            roots.append(node)
+    return roots
+
+
+def _breadcrumb_path(category_id: str, flat: list[dict]) -> list[dict]:
+    """
+    Walk parent chain from leaf to root, return path from root to leaf.
+    Raises ValueError('orphan_node') on broken hierarchy.
+    """
+    by_id = {c["id"]: c for c in flat}
+    if category_id not in by_id:
+        raise KeyError(category_id)
+
+    path = []
+    cur_id = category_id
+    visited = set()
+    while cur_id:
+        if cur_id in visited:
+            raise ValueError("orphan_node")
+        visited.add(cur_id)
+        node = by_id.get(cur_id)
+        if node is None:
+            raise ValueError("orphan_node")
+        path.append(node)
+        cur_id = node.get("parent_id")
+    path.reverse()
+    return path
+
+
+class CategoryTreeView(APIView):
+    """
+    GET /api/v1/categories
+    Returns full nested category tree for the B2C navigation menu.
+    """
+
+    def get(self, request):
+        try:
+            flat = _fetch_flat_categories()
+        except (URLError, OSError):
+            return Response(
+                {"code": "B2B_UNAVAILABLE", "message": "B2B сервис временно недоступен"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except HTTPError as exc:
+            return Response(
+                {"code": "B2B_ERROR", "message": f"Ошибка B2B: {exc.code}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        try:
+            tree = _build_tree(flat)
+        except ValueError:
+            return Response(
+                {"error": "orphan_node", "message": "category hierarchy is broken"},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        return Response({"items": tree}, status=status.HTTP_200_OK)
+
+
+class CategoryDetailView(APIView):
+    """
+    GET /api/v1/categories/{category_id}
+    Returns flat category details fetched from B2B.
+    """
+
+    def get(self, request, category_id):
+        try:
+            flat = _fetch_flat_categories()
+        except (URLError, OSError):
+            return Response(
+                {"code": "B2B_UNAVAILABLE", "message": "B2B сервис временно недоступен"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except HTTPError as exc:
+            return Response(
+                {"code": "B2B_ERROR", "message": f"Ошибка B2B: {exc.code}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        by_id = {c["id"]: c for c in flat}
+        cat = by_id.get(str(category_id))
+        if cat is None:
+            return Response(
+                {"code": "NOT_FOUND", "message": "Category not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Resolve parent details if available
+        parent = None
+        pid = cat.get("parent_id")
+        if pid and pid in by_id:
+            parent = {k: v for k, v in by_id[pid].items() if k != "parent_id"}
+
+        return Response(
+            {**cat, "parent": parent},
+            status=status.HTTP_200_OK,
+        )
+
+
+class BreadcrumbsView(APIView):
+    """
+    GET /api/v1/breadcrumbs?category_id=<uuid>
+    GET /api/v1/breadcrumbs?product_id=<uuid>
+    Exactly one param required; returns path from root to the given node.
+    """
+
+    def get(self, request):
+        category_id = request.query_params.get("category_id")
+        product_id = request.query_params.get("product_id")
+
+        # Exactly one param
+        if category_id and product_id:
+            return Response(
+                {
+                    "error": "ambiguous_param",
+                    "message": "only one of category_id or product_id must be provided",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not category_id and not product_id:
+            return Response(
+                {
+                    "error": "missing_param",
+                    "message": "category_id or product_id must be provided",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        resolved_via = "category_id" if category_id else "product_id"
+
+        # If product_id given, resolve to category_id via B2B product endpoint
+        if product_id:
+            try:
+                _, data = _b2b_get(
+                    "/api/v1/public/products/",
+                    params={"ids": product_id},
+                )
+                items = data.get("items", []) if isinstance(data, dict) else data
+                if not items:
+                    return Response(
+                        {"code": "NOT_FOUND", "message": "Product not found"},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+                cat_info = (items[0].get("category") or {})
+                category_id = cat_info.get("id")
+                if not category_id:
+                    return Response(
+                        {"code": "NOT_FOUND", "message": "Product has no category"},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+            except (URLError, OSError):
+                return Response(
+                    {"code": "B2B_UNAVAILABLE", "message": "B2B сервис временно недоступен"},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+            except HTTPError as exc:
+                return Response(
+                    {"code": "B2B_ERROR", "message": f"Ошибка B2B: {exc.code}"},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+
+        # Fetch flat category list and build path
+        try:
+            flat = _fetch_flat_categories()
+        except (URLError, OSError):
+            return Response(
+                {"code": "B2B_UNAVAILABLE", "message": "B2B сервис временно недоступен"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except HTTPError as exc:
+            return Response(
+                {"code": "B2B_ERROR", "message": f"Ошибка B2B: {exc.code}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        try:
+            path = _breadcrumb_path(str(category_id), flat)
+        except KeyError:
+            return Response(
+                {"code": "NOT_FOUND", "message": "Category not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except ValueError:
+            return Response(
+                {"error": "orphan_node", "message": "category hierarchy is broken"},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        breadcrumbs = [
+            {
+                "id": node["id"],
+                "name": node["name"],
+                "level": idx,
+                "is_current": idx == len(path) - 1,
+            }
+            for idx, node in enumerate(path)
+        ]
+
+        return Response(
+            {
+                "data": breadcrumbs,
+                "meta": {
+                    "resolved_via": resolved_via,
+                    "category_id": str(category_id),
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class FacetsView(APIView):

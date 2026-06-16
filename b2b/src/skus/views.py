@@ -102,7 +102,7 @@ class SKUDetailView(APIView):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    def put(self, request, sku_id):
+    def patch(self, request, sku_id):
         sku = self.get_object(sku_id)
         if sku is None:
             return self._sku_not_found()
@@ -146,23 +146,6 @@ class SKUDetailView(APIView):
             except Exception:
                 pass
 
-        return Response(SKUSerializer(sku).data, status=status.HTTP_200_OK)
-
-    def patch(self, request, sku_id):
-        sku = self.get_object(sku_id)
-
-        if sku is None:
-            return Response(
-                {
-                    "code": "SKU_NOT_FOUND",
-                    "message": "SKU не найден",
-                },
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        serializer = SKUUpdateSerializer(sku, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        sku = serializer.save()
         return Response(SKUSerializer(sku).data, status=status.HTTP_200_OK)
 
     def delete(self, request, sku_id):
