@@ -16,6 +16,34 @@ class ReserveOperation(models.Model):
     result = models.JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
 
+
+class FulfilledOrder(models.Model):
+    """
+    Idempotency table for POST /api/v1/inventory/fulfill.
+
+    ADR – idempotency for fulfill:
+      Option A) Separate fulfilled_orders table (chosen).
+        + Zero risk of double deduction on retry: first INSERT wins, subsequent
+          SELECT finds the row and returns early.
+        + Simple to reason about; no coupling to SKU quantities.
+        - Extra table and one INSERT per request.
+      Option B) last_fulfilled_order field on SKU model.
+        - Can't handle multi-SKU orders atomically; race condition if two SKUs
+          belong to the same order.
+      Option C) Check reserved_quantity before decrement.
+        - Cannot distinguish "already fulfilled" from "never had a reserve".
+          Double call after partial retry could silently corrupt data.
+      Chosen: Option A — lowest risk of double deduction + O(1) idempotency
+      check inside the same transaction.
+    """
+
+    order_id = models.UUIDField(primary_key=True)
+    fulfilled_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Выполненный заказ"
+        verbose_name_plural = "Выполненные заказы"
+
     class Meta:
         verbose_name = "Операция резервирования"
         verbose_name_plural = "Операции резервирования"

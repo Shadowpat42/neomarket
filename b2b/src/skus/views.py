@@ -7,6 +7,7 @@ import uuid
 
 from products.models import Product
 from products.permissions import IsB2CServiceKey
+from b2c_client import notify_sku_out_of_stock
 from .models import SKU, SKUImage
 from .serializers import (
     SKUSerializer,
@@ -18,6 +19,7 @@ from .serializers import (
 from shared_models.models import BaseProductStatus
 from moderation_client import send_product_moderation_event
 from .inventory import InsufficientStockError, reserve_skus, unreserve_skus
+from .models import FulfilledOrder
 
 
 class SKUCreateView(APIView):
@@ -152,15 +154,73 @@ class SKUDetailView(APIView):
         sku = self.get_object(sku_id)
 
         if sku is None:
+            return self._sku_not_found()
+
+        product = sku.product
+
+        # 1. Ownership check
+        if str(product.seller_id) != str(request.user.id):
             return Response(
                 {
-                    "code": "SKU_NOT_FOUND",
-                    "message": "SKU не найден",
+                    "code": "NOT_OWNER",
+                    "message": "SKU does not belong to the authenticated seller",
                 },
-                status=status.HTTP_404_NOT_FOUND,
+                status=status.HTTP_403_FORBIDDEN,
             )
 
+        # 2. HARD_BLOCKED guard (before reserves check)
+        if product.status == BaseProductStatus.HARD_BLOCKED:
+            return Response(
+                {
+                    "code": "FORBIDDEN",
+                    "message": "Cannot delete SKU of hard-blocked product",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # 3. Active-reserves guard
+        if (sku.reserved_quantity or 0) > 0:
+            return Response(
+                {
+                    "code": "CONFLICT",
+                    "message": "Cannot delete SKU with active reserves",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Capture state before deletion for side-effects
+        active_qty = max(0, (sku.stock_quantity or 0) - (sku.reserved_quantity or 0))
+        old_product_status = product.status
+
+        # 4. Delete the SKU
         sku.delete()
+
+        # 5. Side-effects
+        remaining = product.skus.count()
+
+        # Last SKU deleted while product was ON_MODERATION
+        # → revert product to CREATED; close the moderation ticket
+        if remaining == 0 and old_product_status == BaseProductStatus.ON_MODERATION:
+            product.status = BaseProductStatus.CREATED
+            product.save(update_fields=["status"])
+            try:
+                send_product_moderation_event(
+                    event_type="PRODUCT_DELETED",
+                    product_id=product.id,
+                    seller_id=product.seller_id,
+                    idempotency_key=uuid.uuid4(),
+                    occurred_at=timezone.now(),
+                )
+            except Exception:
+                pass
+
+        # Active stock existed and product is MODERATED → notify B2C
+        if active_qty > 0 and old_product_status == BaseProductStatus.MODERATED:
+            try:
+                notify_sku_out_of_stock(sku_id=sku_id, product_id=product.id)
+            except Exception:
+                pass
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -333,3 +393,79 @@ class UnreserveView(APIView):
 
         result = unreserve_skus(order_id=order_id, items=items)
         return Response(result, status=status.HTTP_200_OK)
+
+
+class FulfillView(APIView):
+    """
+    POST /api/v1/inventory/fulfill
+    Final write-off of reserved stock on order delivery.
+
+    Decreases both reserved_quantity and stock_quantity so that
+    active_quantity (= stock - reserved) remains unchanged —
+    the goods are now physically with the customer.
+
+    Idempotent by order_id (FulfilledOrder table).
+    Requires X-Service-Key == B2C_SERVICE_KEY.
+    """
+
+    permission_classes = [IsB2CServiceKey]
+
+    def post(self, request):
+        from django.db import transaction
+        from django.utils import timezone as tz
+
+        order_id = request.data.get("order_id")
+        items = request.data.get("items")
+
+        if not order_id:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "order_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not items:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "items is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        now = tz.now()
+
+        with transaction.atomic():
+            # Idempotency: first call inserts, retries find existing row
+            _, created = FulfilledOrder.objects.get_or_create(order_id=order_id)
+            if not created:
+                return Response(
+                    {
+                        "order_id": order_id,
+                        "status": "FULFILLED",
+                        "processed_at": now.isoformat(),
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            # Lock and update each SKU
+            for item in items:
+                sku_id = item.get("sku_id")
+                qty = int(item.get("quantity", 0))
+
+                try:
+                    sku = SKU.objects.select_for_update().get(id=sku_id)
+                except SKU.DoesNotExist:
+                    return Response(
+                        {"code": "NOT_FOUND", "message": f"SKU {sku_id} not found"},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+
+                # Decrease both quantities so active_quantity stays the same
+                sku.reserved_quantity = max(0, (sku.reserved_quantity or 0) - qty)
+                sku.stock_quantity = max(0, (sku.stock_quantity or 0) - qty)
+                sku.save(update_fields=["reserved_quantity", "stock_quantity"])
+
+        return Response(
+            {
+                "order_id": order_id,
+                "status": "FULFILLED",
+                "processed_at": now.isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )

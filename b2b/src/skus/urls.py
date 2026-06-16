@@ -8,6 +8,7 @@ from .views import (
     SKUImageDetailView,
     ReserveView,
     UnreserveView,
+    FulfillView,
 )
 
 urlpatterns = [
@@ -22,4 +23,5 @@ urlpatterns = [
     # Inventory (B2C service-to-service)
     path("api/v1/inventory/reserve", ReserveView.as_view(), name="inventory-reserve"),
     path("api/v1/inventory/unreserve", UnreserveView.as_view(), name="inventory-unreserve"),
+    path("api/v1/inventory/fulfill", FulfillView.as_view(), name="inventory-fulfill"),
 ]
