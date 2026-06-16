@@ -67,7 +67,7 @@ class EditProductTests(APITestCase):
         SKUImage.objects.create(sku=sku, url="https://cdn.example.com/sku.jpg", ordering=0)
         return sku
 
-    def _put_product_payload(self, title="iPhone 15 (updated)"):
+    def _patch_product_payload(self, title="iPhone 15 (updated)"):
         return {
             "title": title,
             "description": "Updated description",
@@ -75,7 +75,7 @@ class EditProductTests(APITestCase):
             "images": [{"url": "https://cdn.example.com/new.jpg", "ordering": 0}],
         }
 
-    def _put_sku_payload(self):
+    def _patch_sku_payload(self):
         return {
             "name": "128GB Black (updated)",
             "price": 10500_00,
@@ -87,16 +87,17 @@ class EditProductTests(APITestCase):
 
     def test_edit_moderated_product_returns_to_on_moderation(self):
         """
-        PUT /api/v1/products/{id} on a MODERATED product:
+        PATCH /api/v1/products/{id} on a MODERATED product:
         - status transitions to ON_MODERATION
         - PRODUCT_EDITED event is sent to Moderation
+        - event payload contains json_before snapshot
         """
         product = self._make_product(st=BaseProductStatus.MODERATED)
 
         with patch("products.views.send_product_moderation_event") as mock_send:
-            resp = self.client.put(
+            resp = self.client.patch(
                 f"/api/v1/products/{product.id}/",
-                self._put_product_payload(),
+                self._patch_product_payload(),
                 format="json",
             )
 
@@ -104,20 +105,23 @@ class EditProductTests(APITestCase):
         product.refresh_from_db()
         self.assertEqual(product.status, BaseProductStatus.ON_MODERATION)
         mock_send.assert_called_once()
-        self.assertEqual(mock_send.call_args[1]["event_type"], "PRODUCT_EDITED")
+        kw = mock_send.call_args[1]
+        self.assertEqual(kw["event_type"], "PRODUCT_EDITED")
+        self.assertIn("json_before", kw)
+        self.assertEqual(kw["json_before"]["status"], BaseProductStatus.MODERATED)
 
     def test_edit_blocked_product_returns_to_on_moderation(self):
         """
-        PUT /api/v1/products/{id} on a BLOCKED product:
+        PATCH /api/v1/products/{id} on a BLOCKED product:
         - status transitions to ON_MODERATION
         - PRODUCT_EDITED event is sent
         """
         product = self._make_product(st=BaseProductStatus.BLOCKED)
 
         with patch("products.views.send_product_moderation_event") as mock_send:
-            resp = self.client.put(
+            resp = self.client.patch(
                 f"/api/v1/products/{product.id}/",
-                self._put_product_payload(title="iPhone 15 (fixed)"),
+                self._patch_product_payload(title="iPhone 15 (fixed)"),
                 format="json",
             )
 
@@ -129,16 +133,16 @@ class EditProductTests(APITestCase):
 
     def test_reserves_preserved_after_sku_edit(self):
         """
-        PUT /api/v1/skus/{id}: reserved_quantity is never touched by edit.
+        PATCH /api/v1/skus/{id}: reserved_quantity is never touched by edit.
         """
         product = self._make_product(st=BaseProductStatus.MODERATED)
         sku = self._make_sku(product, reserved=3)
         original_reserved = sku.reserved_quantity
 
         with patch("skus.views.send_product_moderation_event"):
-            resp = self.client.put(
+            resp = self.client.patch(
                 f"/api/v1/skus/{sku.id}",
-                self._put_sku_payload(),
+                self._patch_sku_payload(),
                 format="json",
             )
 
@@ -149,13 +153,13 @@ class EditProductTests(APITestCase):
 
     def test_edit_hard_blocked_returns_403(self):
         """
-        Any PUT on a HARD_BLOCKED product (or SKU of such product) → 403 FORBIDDEN.
+        PATCH on a HARD_BLOCKED product (or SKU of such product) → 403 FORBIDDEN.
         """
         product = self._make_product(st=BaseProductStatus.HARD_BLOCKED)
 
-        resp = self.client.put(
+        resp = self.client.patch(
             f"/api/v1/products/{product.id}/",
-            self._put_product_payload(),
+            self._patch_product_payload(),
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
@@ -163,9 +167,9 @@ class EditProductTests(APITestCase):
 
         # SKU of HARD_BLOCKED product also forbidden
         sku = self._make_sku(product)
-        resp_sku = self.client.put(
+        resp_sku = self.client.patch(
             f"/api/v1/skus/{sku.id}",
-            self._put_sku_payload(),
+            self._patch_sku_payload(),
             format="json",
         )
         self.assertEqual(resp_sku.status_code, status.HTTP_403_FORBIDDEN)
@@ -173,7 +177,7 @@ class EditProductTests(APITestCase):
 
     def test_edit_others_product_returns_403(self):
         """
-        PUT /api/v1/products/{id} on another seller's product → 403 NOT_OWNER.
+        PATCH /api/v1/products/{id} on another seller's product → 403 NOT_OWNER.
         """
         product = Product.objects.create(
             seller_id=self.other.id,
@@ -184,9 +188,9 @@ class EditProductTests(APITestCase):
         )
         Image.objects.create(product=product, url="https://cdn.example.com/other.jpg", ordering=0)
 
-        resp = self.client.put(
+        resp = self.client.patch(
             f"/api/v1/products/{product.id}/",
-            self._put_product_payload(),
+            self._patch_product_payload(),
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
@@ -194,9 +198,9 @@ class EditProductTests(APITestCase):
 
         # SKU ownership check via parent product
         sku = self._make_sku(product)
-        resp_sku = self.client.put(
+        resp_sku = self.client.patch(
             f"/api/v1/skus/{sku.id}",
-            self._put_sku_payload(),
+            self._patch_sku_payload(),
             format="json",
         )
         self.assertEqual(resp_sku.status_code, status.HTTP_403_FORBIDDEN)

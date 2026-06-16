@@ -6,6 +6,7 @@ from .views import (
     ProductCatalogView,
     CategoryListCreateView,
     CategoryDetailView,
+    PublicCategoryListView,
     ModerationEventView,
 )
 
@@ -23,4 +24,7 @@ urlpatterns = [
 
     # Moderation Service → B2B events (X-Service-Key required)
     path('api/v1/moderation/events', ModerationEventView.as_view(), name='moderation-events'),
+
+    # B2C public category list (X-Service-Key required)
+    path('api/v1/public/categories', PublicCategoryListView.as_view(), name='public-category-list'),
 ]
