@@ -452,10 +452,34 @@ def _breadcrumb_path(category_id: str, flat: list[dict]) -> list[dict]:
     return path
 
 
+class CategoryFlatListView(APIView):
+    """
+    GET /api/v1/catalog/categories
+    Returns flat list of all categories [{id, name, parent_id}].
+    """
+
+    def get(self, request):
+        try:
+            flat = _fetch_flat_categories()
+        except (URLError, OSError):
+            return Response(
+                {"code": "B2B_UNAVAILABLE", "message": "B2B сервис временно недоступен"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except HTTPError as exc:
+            return Response(
+                {"code": "B2B_ERROR", "message": f"Ошибка B2B: {exc.code}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(flat, status=status.HTTP_200_OK)
+
+
 class CategoryTreeView(APIView):
     """
-    GET /api/v1/categories
+    GET /api/v1/catalog/categories/tree
     Returns full nested category tree for the B2C navigation menu.
+    Response is a plain CategoryRef[] array (no wrapper).
     """
 
     def get(self, request):
@@ -480,7 +504,7 @@ class CategoryTreeView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        return Response({"items": tree}, status=status.HTTP_200_OK)
+        return Response(tree, status=status.HTTP_200_OK)
 
 
 class CategoryDetailView(APIView):

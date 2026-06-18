@@ -142,7 +142,7 @@ class ViewProductTests(APITestCase):
         self.assertEqual(response.data["skus"][0]["cost_price"], 9500000)
         self.assertEqual(response.data["skus"][0]["reserved_quantity"], 2)
         self.assertEqual(response.data["skus"][0]["active_quantity"], 10)
-        self.assertIn("image", response.data["skus"][0])
+        self.assertIn("images", response.data["skus"][0])
 
     def test_get_blocked_product_returns_blocking_reason_and_field_reports(self):
         product, reason, _sku = self._create_blocked_product_with_reports()

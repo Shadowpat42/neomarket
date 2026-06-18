@@ -68,17 +68,17 @@ class BannerListTests(TestCase):
 
     def test_active_banners_returned_sorted_by_priority(self):
         """
-        GET /api/v1/home/banners returns only active, in-schedule banners,
-        sorted ascending by priority.
+        GET /api/v1/catalog/banners returns only active, in-schedule banners,
+        sorted ascending by priority. Response is a plain array.
         """
-        resp = self.client.get("/api/v1/home/banners")
+        resp = self.client.get("/api/v1/catalog/banners")
         self.assertEqual(resp.status_code, 200)
-        items = resp.data["items"]
+        items = resp.data
         # 2 active in-schedule banners (Баннер 1 and Баннер 2), expired excluded
         self.assertEqual(len(items), 2)
-        # Sorted by priority ascending
-        priorities = [item["priority"] for item in items]
-        self.assertEqual(priorities, sorted(priorities))
+        # Sorted by priority ascending (returned as 'ordering' field)
+        orderings = [item["ordering"] for item in items]
+        self.assertEqual(orderings, sorted(orderings))
         # Inactive and expired must NOT appear
         titles = [item["title"] for item in items]
         self.assertNotIn("Старый баннер", titles)
@@ -86,13 +86,12 @@ class BannerListTests(TestCase):
 
     def test_no_active_banners_returns_200_empty(self):
         """
-        When no banners are active, returns 200 with empty items list.
+        When no banners are active, returns 200 with empty array.
         """
         Banner.objects.all().update(is_active=False)
-        resp = self.client.get("/api/v1/home/banners")
+        resp = self.client.get("/api/v1/catalog/banners")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["items"], [])
-        self.assertEqual(resp.data["total_count"], 0)
+        self.assertEqual(list(resp.data), [])
 
 
 class BannerEventTests(TestCase):
@@ -165,21 +164,41 @@ class CollectionsListTests(TestCase):
         for pid in [PRODUCT_ID_1, PRODUCT_ID_2]:
             CollectionProduct.objects.create(collection=self.col1, product_id=pid)
 
-    def test_collections_list_returns_metadata_without_products(self):
+    @patch("home.views._b2b_get")
+    def test_collections_list_returns_name_and_products(self, mock_b2b_get):
         """
-        GET /api/v1/main/collections returns collection metadata.
-        Does NOT include product data (no products field in items).
+        GET /api/v1/catalog/collections returns plain array of collections.
+        Each item has 'name' (not 'title') and 'products' array.
+        Inactive collections are excluded.
         """
-        resp = self.client.get("/api/v1/main/collections")
+        mock_b2b_get.return_value = (
+            200,
+            {
+                "items": [
+                    _b2b_product(PRODUCT_ID_1, "iPhone 15"),
+                    _b2b_product(PRODUCT_ID_2, "MacBook"),
+                ],
+                "total_count": 2,
+            },
+        )
+
+        resp = self.client.get("/api/v1/catalog/collections")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["total_count"], 2)  # inactive excluded
-        titles = [c["title"] for c in resp.data["items"]]
-        self.assertIn("Хиты продаж", titles)
-        self.assertIn("Новинки", titles)
-        self.assertNotIn("Неактивная", titles)
-        # No products inside items
-        for item in resp.data["items"]:
-            self.assertNotIn("products", item)
+
+        # Plain array (no pagination wrapper)
+        items = list(resp.data)
+        self.assertEqual(len(items), 2)  # inactive excluded
+
+        names = [c["name"] for c in items]
+        self.assertIn("Хиты продаж", names)
+        self.assertIn("Новинки", names)
+        self.assertNotIn("Неактивная", names)
+
+        # Each item has 'name' and 'products'
+        for item in items:
+            self.assertIn("name", item)
+            self.assertNotIn("title", item)
+            self.assertIn("products", item)
 
 
 class CollectionProductsTests(TestCase):

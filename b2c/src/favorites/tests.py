@@ -52,26 +52,24 @@ class FavoritesAddTests(TestCase):
     def _url(self, pid=PRODUCT_ID):
         return f"/api/v1/favorites/{pid}"
 
-    def test_add_to_favorites_returns_201(self):
+    def test_add_to_favorites_returns_204(self):
         """
-        POST /api/v1/favorites/{product_id} → 201 on first add.
+        PUT /api/v1/favorites/{product_id} → 204 No Content.
         Record created in DB.
         """
-        resp = self.client.post(self._url())
-        self.assertEqual(resp.status_code, 201)
-        self.assertEqual(str(resp.data["product_id"]), PRODUCT_ID)
+        resp = self.client.put(self._url())
+        self.assertEqual(resp.status_code, 204)
         self.assertTrue(Favorite.objects.filter(
             user_id=USER_ID, product_id=PRODUCT_ID).exists())
 
-    def test_repeat_add_returns_200_not_duplicate(self):
+    def test_repeat_add_is_idempotent(self):
         """
-        POST twice with the same product_id → second call returns 200, not 201.
-        Only one row in DB (no duplicate).
+        PUT twice with the same product_id → both return 204, only one row in DB.
         """
-        self.client.post(self._url())
-        resp = self.client.post(self._url())
+        self.client.put(self._url())
+        resp = self.client.put(self._url())
 
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 204)
         count = Favorite.objects.filter(user_id=USER_ID, product_id=PRODUCT_ID).count()
         self.assertEqual(count, 1, "Must not create a duplicate row")
 
@@ -88,8 +86,8 @@ class FavoritesAddTests(TestCase):
         The favorite is created for USER_ID (from X-User-Id), not for OTHER_USER_ID.
         """
         # Pass other user's ID in query — must be ignored
-        resp = self.client.post(f"/api/v1/favorites/{PRODUCT_ID}?user_id={OTHER_USER_ID}")
-        self.assertEqual(resp.status_code, 201)
+        resp = self.client.put(f"/api/v1/favorites/{PRODUCT_ID}?user_id={OTHER_USER_ID}")
+        self.assertEqual(resp.status_code, 204)
 
         # Favorite must belong to authenticated USER_ID, not OTHER_USER_ID
         self.assertTrue(Favorite.objects.filter(
@@ -115,7 +113,9 @@ class FavoritesListTests(TestCase):
 
         resp = self.client.get("/api/v1/favorites")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["total"], 1)
+        self.assertEqual(resp.data["total_count"], 1)
+        self.assertIn("limit", resp.data)
+        self.assertIn("offset", resp.data)
         item = resp.data["items"][0]
         self.assertEqual(str(item["product_id"]), PRODUCT_ID)
         self.assertIn("product", item)
@@ -133,8 +133,8 @@ class FavoritesListTests(TestCase):
 
         resp = self.client.get("/api/v1/favorites")
         self.assertEqual(resp.status_code, 200)
-        # total still counts stored favorites
-        self.assertEqual(resp.data["total"], 1)
+        # total_count still counts stored favorites
+        self.assertEqual(resp.data["total_count"], 1)
         # but items is empty because B2B didn't return the product
         self.assertEqual(len(resp.data["items"]), 0)
 
@@ -157,19 +157,18 @@ class SubscriptionTests(TestCase):
         return (200, {"items": [], "total_count": 0, "limit": 20, "offset": 0})
 
     @patch("favorites.views._b2b_get")
-    def test_subscribe_returns_201_with_notify_on(self, mock_b2b_get):
+    def test_subscribe_returns_204(self, mock_b2b_get):
         """
-        POST /api/v1/favorites/{product_id}/subscribe → 201, subscription persisted.
+        POST /api/v1/favorites/{product_id}/subscribe → 204, subscription persisted.
         """
         mock_b2b_get.return_value = self._b2b_found()
 
         resp = self.client.post(
             self.url,
-            {"notify_on": ["IN_STOCK", "PRICE_DOWN"]},
+            {"events": ["BACK_IN_STOCK", "PRICE_DROP"]},
             format="json",
         )
-        self.assertEqual(resp.status_code, 201)
-        self.assertEqual(sorted(resp.data["notify_on"]), ["IN_STOCK", "PRICE_DOWN"])
+        self.assertEqual(resp.status_code, 204)
         self.assertTrue(ProductSubscription.objects.filter(
             user_id=USER_ID, product_id=PRODUCT_ID).exists())
 
@@ -179,22 +178,22 @@ class SubscriptionTests(TestCase):
         Second POST with same product_id → 409 SUBSCRIPTION_ALREADY_EXISTS.
         """
         mock_b2b_get.return_value = self._b2b_found()
-        self.client.post(self.url, {"notify_on": ["IN_STOCK"]}, format="json")
+        self.client.post(self.url, {"events": ["BACK_IN_STOCK"]}, format="json")
 
         mock_b2b_get.return_value = self._b2b_found()
-        resp = self.client.post(self.url, {"notify_on": ["PRICE_DOWN"]}, format="json")
+        resp = self.client.post(self.url, {"events": ["PRICE_DROP"]}, format="json")
         self.assertEqual(resp.status_code, 409)
         self.assertEqual(resp.data["code"], "SUBSCRIPTION_ALREADY_EXISTS")
 
-    def test_invalid_notify_on_returns_400(self):
+    def test_invalid_events_returns_400(self):
         """
-        Empty or unknown notify_on → 400 INVALID_NOTIFY_ON.
+        Empty or unknown events → 400 INVALID_NOTIFY_ON.
         """
         for bad in [[], ["UNKNOWN_EVENT"], None]:
-            with self.subTest(notify_on=bad):
+            with self.subTest(events=bad):
                 resp = self.client.post(
                     self.url,
-                    {"notify_on": bad},
+                    {"events": bad},
                     format="json",
                 )
                 self.assertEqual(resp.status_code, 400)
@@ -209,7 +208,7 @@ class SubscriptionTests(TestCase):
 
         resp = self.client.post(
             self.url,
-            {"notify_on": ["IN_STOCK"]},
+            {"events": ["BACK_IN_STOCK"]},
             format="json",
         )
         self.assertEqual(resp.status_code, 404)

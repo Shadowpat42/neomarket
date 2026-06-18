@@ -660,15 +660,16 @@ class CategoryTreeTests(TestCase):
     @patch("catalog.views._b2b_get")
     def test_category_tree_returns_nested_structure(self, mock_b2b_get):
         """
-        GET /api/v1/categories builds a nested tree from B2B flat list.
+        GET /api/v1/catalog/categories/tree builds a nested tree from B2B flat list.
         Электроника → Смартфоны → Android
         """
         mock_b2b_get.return_value = (200, FLAT_CATEGORIES)
 
-        resp = self.client.get("/api/v1/categories")
+        resp = self.client.get("/api/v1/catalog/categories/tree")
         self.assertEqual(resp.status_code, 200)
 
-        items = resp.data["items"]
+        # Response is a plain array (no wrapper)
+        items = resp.data
         self.assertEqual(len(items), 1, "One root category expected")
         root = items[0]
         self.assertEqual(root["id"], ELECTRONICS_ID)
@@ -682,19 +683,19 @@ class CategoryTreeTests(TestCase):
     @patch("catalog.views._b2b_get")
     def test_unknown_category_returns_404(self, mock_b2b_get):
         """
-        GET /api/v1/categories/{id} for a non-existent category → 404.
+        GET /api/v1/catalog/categories/{id} for a non-existent category → 404.
         """
         mock_b2b_get.return_value = (200, FLAT_CATEGORIES)
         unknown_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
-        resp = self.client.get(f"/api/v1/categories/{unknown_id}")
+        resp = self.client.get(f"/api/v1/catalog/categories/{unknown_id}")
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(resp.data["code"], "NOT_FOUND")
 
     @patch("catalog.views._b2b_get")
     def test_orphan_node_returns_422(self, mock_b2b_get):
         """
-        GET /api/v1/categories with a node whose parent_id doesn't exist → 422.
+        GET /api/v1/catalog/categories/tree with a node whose parent_id doesn't exist → 422.
         """
         orphan_flat = [
             {"id": ELECTRONICS_ID, "name": "Электроника", "parent_id": None},
@@ -707,7 +708,7 @@ class CategoryTreeTests(TestCase):
         ]
         mock_b2b_get.return_value = (200, orphan_flat)
 
-        resp = self.client.get("/api/v1/categories")
+        resp = self.client.get("/api/v1/catalog/categories/tree")
         self.assertEqual(resp.status_code, 422)
         self.assertEqual(resp.data["error"], "orphan_node")
 

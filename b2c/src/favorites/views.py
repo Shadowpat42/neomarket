@@ -157,34 +157,32 @@ class FavoritesListView(APIView):
                 })
 
         return Response(
-            {"items": items, "total": total},
+            {
+                "items": items,
+                "total_count": total,
+                "limit": limit,
+                "offset": offset,
+            },
             status=status.HTTP_200_OK,
         )
 
 
 class FavoriteItemView(APIView):
     """
-    POST   /api/v1/favorites/{product_id} — add (idempotent)
-    DELETE /api/v1/favorites/{product_id} — remove (idempotent)
+    PUT    /api/v1/favorites/{product_id} — add (idempotent, 204)
+    DELETE /api/v1/favorites/{product_id} — remove (idempotent, 204)
     """
 
-    def post(self, request, product_id):
+    def put(self, request, product_id):
         user_id, err = _require_user_id(request)
         if err:
             return err
 
-        fav, created = Favorite.objects.get_or_create(
+        Favorite.objects.get_or_create(
             user_id=user_id,
             product_id=product_id,
         )
-        http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-        return Response(
-            {
-                "product_id": str(fav.product_id),
-                "added_at": fav.added_at.isoformat(),
-            },
-            status=http_status,
-        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     def delete(self, request, product_id):
         user_id, err = _require_user_id(request)
@@ -208,10 +206,10 @@ class SubscribeView(APIView):
         if err:
             return err
 
-        notify_on = request.data.get("notify_on")
+        notify_on = request.data.get("events")
         if not notify_on or not isinstance(notify_on, list) or len(notify_on) == 0:
             return Response(
-                {"code": "INVALID_NOTIFY_ON", "message": "notify_on must be a non-empty list"},
+                {"code": "INVALID_NOTIFY_ON", "message": "events must be a non-empty list"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         invalid = set(notify_on) - VALID_NOTIFY_ON
@@ -219,7 +217,7 @@ class SubscribeView(APIView):
             return Response(
                 {
                     "code": "INVALID_NOTIFY_ON",
-                    "message": f"Invalid notify_on values: {sorted(invalid)}. "
+                    "message": f"Invalid events values: {sorted(invalid)}. "
                                f"Allowed: {sorted(VALID_NOTIFY_ON)}",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -260,20 +258,12 @@ class SubscribeView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        sub = ProductSubscription.objects.create(
+        ProductSubscription.objects.create(
             user_id=user_id,
             product_id=product_id,
             notify_on=list(notify_on),
         )
-        return Response(
-            {
-                "id": str(sub.id),
-                "product_id": str(sub.product_id),
-                "notify_on": sub.notify_on,
-                "created_at": sub.created_at.isoformat(),
-            },
-            status=status.HTTP_201_CREATED,
-        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     def delete(self, request, product_id):
         user_id, err = _require_user_id(request)

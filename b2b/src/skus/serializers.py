@@ -155,10 +155,10 @@ class SKUPutSerializer(serializers.Serializer):
     Like POST /skus but without product_id; reserved_quantity is never touched.
     """
 
-    name = serializers.CharField(required=True, max_length=255)
-    price = serializers.IntegerField(required=True, min_value=1)
-    cost_price = serializers.IntegerField(required=True, min_value=1)
-    discount = serializers.IntegerField(required=False, min_value=0, default=0)
+    name = serializers.CharField(required=False, max_length=255)
+    price = serializers.IntegerField(required=False, min_value=1)
+    cost_price = serializers.IntegerField(required=False, min_value=1)
+    discount = serializers.IntegerField(required=False, min_value=0)
     image = serializers.URLField(write_only=True, required=False)
     images = SKUImageSerializer(many=True, required=False)
     characteristics = SKUCharacteristicSerializer(many=True, required=False)
@@ -169,10 +169,11 @@ class SKUPutSerializer(serializers.Serializer):
 
         if not images_data and image_url:
             images_data = [{"url": image_url, "ordering": 0}]
-        if not images_data:
-            raise serializers.ValidationError({"image": "image is required"})
 
-        attrs["images"] = images_data
+        if images_data:
+            attrs["images"] = images_data
+        else:
+            attrs.pop("images", None)
         return attrs
 
     def update(self, instance, validated_data):
@@ -181,7 +182,7 @@ class SKUPutSerializer(serializers.Serializer):
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-        instance.save()
+        instance.save()  # always save to update updated_at
 
         if images_data is not None:
             instance.images.all().delete()

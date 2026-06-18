@@ -58,14 +58,11 @@ class BannerListView(APIView):
                 "title": b.title,
                 "image_url": b.image_url,
                 "link": b.link,
-                "priority": b.priority,
+                "ordering": b.priority,
             }
             for b in qs
         ]
-        return Response(
-            {"items": items, "total_count": len(items)},
-            status=status.HTTP_200_OK,
-        )
+        return Response(items, status=status.HTTP_200_OK)
 
 
 class BannerEventView(APIView):
@@ -145,43 +142,65 @@ def _extract_user_id(request):
 
 class CollectionsListView(APIView):
     """
-    GET /api/v1/main/collections
-    Public. Returns active collection metadata (no products), sorted by priority.
+    GET /api/v1/catalog/collections
+    Public. Returns active collections with products enriched from B2B, sorted by priority.
+    Response is a plain Collection[] array (no pagination wrapper).
     """
 
     def get(self, request):
         from django.db.models import Q
         from datetime import date
+        from collections import defaultdict
 
         today = date.today()
-        qs = Collection.objects.filter(is_active=True).filter(
-            Q(start_date__isnull=True) | Q(start_date__lte=today)
-        ).order_by("priority")
-
-        try:
-            limit = max(1, min(100, int(request.query_params.get("limit", 10))))
-            offset = max(0, int(request.query_params.get("offset", 0)))
-        except (TypeError, ValueError):
-            limit, offset = 10, 0
-
-        total = qs.count()
-        page = qs[offset: offset + limit]
-
-        items = [
-            {
-                "id": str(c.id),
-                "title": c.title,
-                "description": c.description,
-                "cover_image_url": c.cover_image_url,
-                "target_url": c.target_url,
-                "priority": c.priority,
-            }
-            for c in page
-        ]
-        return Response(
-            {"items": items, "total_count": total, "limit": limit, "offset": offset},
-            status=status.HTTP_200_OK,
+        qs = list(
+            Collection.objects.filter(is_active=True).filter(
+                Q(start_date__isnull=True) | Q(start_date__lte=today)
+            ).order_by("priority")
         )
+
+        if not qs:
+            return Response([], status=status.HTTP_200_OK)
+
+        # One DB query for all collection-product mappings
+        col_ids = [c.id for c in qs]
+        all_cps = CollectionProduct.objects.filter(
+            collection_id__in=col_ids
+        ).order_by("ordering")
+
+        col_products_map: dict = defaultdict(list)
+        for cp in all_cps:
+            col_products_map[cp.collection_id].append(str(cp.product_id))
+
+        all_product_ids = list({pid for pids in col_products_map.values() for pid in pids})
+
+        # Single B2B batch call
+        b2b_map: dict = {}
+        if all_product_ids:
+            try:
+                _, data = _b2b_get(
+                    "/api/v1/public/products/",
+                    params={"ids": ",".join(all_product_ids)},
+                )
+                b2b_items = data.get("items", []) if isinstance(data, dict) else []
+                b2b_map = {str(p["id"]): p for p in b2b_items}
+            except Exception:
+                pass
+
+        items = []
+        for col in qs:
+            ordered_pids = col_products_map.get(col.id, [])
+            products = [b2b_map[pid] for pid in ordered_pids if pid in b2b_map]
+            items.append({
+                "id": str(col.id),
+                "name": col.title,
+                "description": col.description,
+                "cover_image_url": col.cover_image_url,
+                "target_url": col.target_url,
+                "products": products,
+            })
+
+        return Response(items, status=status.HTTP_200_OK)
 
 
 class CollectionProductsView(APIView):

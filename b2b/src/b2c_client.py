@@ -46,7 +46,7 @@ def _b2c_events_endpoint() -> str:
     return f"{b2c_base_url}/api/v1/b2b/events"
 
 
-def notify_sku_out_of_stock(*, sku_id: Any, product_id: Any) -> None:
+def notify_sku_out_of_stock(*, sku_id: Any, product_id: Any, available_quantity: int = 0) -> None:
     """
     Notify B2C that a SKU's active_quantity has reached 0.
     B2C hides the SKU from the vitrine until stock is replenished.
@@ -60,6 +60,7 @@ def notify_sku_out_of_stock(*, sku_id: Any, product_id: Any) -> None:
             "payload": {
                 "sku_id": str(sku_id),
                 "product_id": str(product_id),
+                "available_quantity": available_quantity,
             },
         },
     )

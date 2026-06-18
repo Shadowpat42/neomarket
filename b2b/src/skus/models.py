@@ -44,12 +44,8 @@ class FulfilledOrder(models.Model):
         verbose_name = "Выполненный заказ"
         verbose_name_plural = "Выполненные заказы"
 
-    class Meta:
-        verbose_name = "Операция резервирования"
-        verbose_name_plural = "Операции резервирования"
-
     def __str__(self):
-        return str(self.idempotency_key)
+        return str(self.order_id)
 
 
 class SKU(models.Model):

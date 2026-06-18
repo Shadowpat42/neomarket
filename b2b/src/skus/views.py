@@ -217,7 +217,11 @@ class SKUDetailView(APIView):
         # Active stock existed and product is MODERATED → notify B2C
         if active_qty > 0 and old_product_status == BaseProductStatus.MODERATED:
             try:
-                notify_sku_out_of_stock(sku_id=sku_id, product_id=product.id)
+                notify_sku_out_of_stock(
+                    sku_id=sku_id,
+                    product_id=product.id,
+                    available_quantity=0,
+                )
             except Exception:
                 pass
 
