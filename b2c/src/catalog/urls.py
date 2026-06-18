@@ -5,6 +5,7 @@ from .views import (
     ProductCardView,
     FacetsView,
     SimilarProductsView,
+    CategoryFlatListView,
     CategoryTreeView,
     CategoryDetailView,
     BreadcrumbsView,
@@ -33,12 +34,17 @@ urlpatterns = [
     ),
     # US-CAT-05: категории и навигация
     path(
-        "api/v1/categories",
+        "api/v1/catalog/categories",
+        CategoryFlatListView.as_view(),
+        name="category-flat",
+    ),
+    path(
+        "api/v1/catalog/categories/tree",
         CategoryTreeView.as_view(),
         name="category-tree",
     ),
     path(
-        "api/v1/categories/<uuid:category_id>",
+        "api/v1/catalog/categories/<uuid:category_id>",
         CategoryDetailView.as_view(),
         name="category-detail",
     ),

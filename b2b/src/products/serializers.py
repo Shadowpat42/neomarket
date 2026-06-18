@@ -10,7 +10,7 @@ from .models import (
     ProductFieldReport,
 )
 from skus.serializers import SKUSerializer
-from skus.models import SKU
+from skus.models import SKU, SKUImage
 
 
 class ImageSerializer(serializers.ModelSerializer):
@@ -252,30 +252,38 @@ class ProductDetailSKUCharacteristicSerializer(serializers.Serializer):
     value = serializers.CharField()
 
 
-class ProductDetailSKUSerializer(serializers.ModelSerializer):
-    """SKU в seller cabinet (B2B-5): одно поле image, cost_price, reserved_quantity."""
+class ProductDetailSKUImageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SKUImage
+        fields = ["url", "ordering"]
 
-    image = serializers.SerializerMethodField()
+
+class ProductDetailSKUSerializer(serializers.ModelSerializer):
+    """SKU в seller cabinet (B2B-5): полный SKUResponse согласно openapi."""
+
+    images = ProductDetailSKUImageSerializer(many=True, read_only=True)
     characteristics = ProductDetailSKUCharacteristicSerializer(many=True, read_only=True)
     active_quantity = serializers.SerializerMethodField()
+    product_id = serializers.UUIDField(read_only=True)
 
     class Meta:
         model = SKU
         fields = [
             "id",
+            "product_id",
             "name",
+            "article",
             "price",
             "cost_price",
             "discount",
-            "image",
-            "active_quantity",
+            "stock_quantity",
             "reserved_quantity",
+            "active_quantity",
+            "images",
             "characteristics",
+            "created_at",
+            "updated_at",
         ]
-
-    def get_image(self, obj: SKU) -> str | None:
-        first = obj.images.order_by("ordering").first()
-        return first.url if first else None
 
     def get_active_quantity(self, obj: SKU) -> int:
         reserved = obj.reserved_quantity or 0

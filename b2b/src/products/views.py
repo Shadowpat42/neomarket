@@ -213,7 +213,7 @@ class ProductDetailView(APIView):
                 pass
 
         return Response(
-            ProductDetailSerializer(self.get_object(product_id)).data,
+            ProductSerializer(self.get_object(product_id)).data,
             status=status.HTTP_200_OK,
         )
 

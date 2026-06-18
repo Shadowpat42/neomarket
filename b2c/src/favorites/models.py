@@ -23,7 +23,7 @@ class Favorite(models.Model):
         return f"Favorite(user={self.user_id}, product={self.product_id})"
 
 
-VALID_NOTIFY_ON = {"IN_STOCK", "PRICE_DOWN"}
+VALID_NOTIFY_ON = {"BACK_IN_STOCK", "PRICE_DROP"}
 
 
 class ProductSubscription(models.Model):
