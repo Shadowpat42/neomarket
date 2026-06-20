@@ -404,14 +404,52 @@ def _fetch_flat_categories() -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+def _enrich_categories(flat: list[dict]) -> list[dict]:
+    """
+    Add `level` (0 = root) and `path` (list of names from root to node inclusive)
+    to every category in the flat list.
+
+    Algorithm: memoised DFS — each node is resolved at most once.
+    Raises ValueError('orphan_node') if any parent_id references a missing node.
+    """
+    by_id: dict[str, dict] = {c["id"]: c for c in flat}
+
+    # Pre-validate: no dangling parent references
+    for c in flat:
+        pid = c.get("parent_id")
+        if pid and pid not in by_id:
+            raise ValueError("orphan_node")
+
+    memo: dict[str, tuple[int, list[str]]] = {}
+
+    def _resolve(cat_id: str) -> tuple[int, list[str]]:
+        if cat_id in memo:
+            return memo[cat_id]
+        node = by_id[cat_id]
+        pid = node.get("parent_id")
+        if pid:
+            parent_level, parent_path = _resolve(pid)
+            result: tuple[int, list[str]] = (parent_level + 1, parent_path + [node["name"]])
+        else:
+            result = (0, [node["name"]])
+        memo[cat_id] = result
+        return result
+
+    enriched = []
+    for c in flat:
+        level, path = _resolve(c["id"])
+        enriched.append({**c, "level": level, "path": path})
+    return enriched
+
+
 def _build_tree(flat: list[dict]) -> list[dict]:
     """
-    Build a nested tree from a flat [{id, name, parent_id}] list.
+    Build a nested tree from a flat list (already enriched with level/path).
+    Copies all fields from each node and adds an empty `children` list.
     Raises ValueError('orphan_node') if any node's parent_id is not in the list.
     """
     by_id = {c["id"]: dict(c, children=[]) for c in flat}
 
-    # Detect orphan nodes
     for c in flat:
         pid = c.get("parent_id")
         if pid and pid not in by_id:
@@ -455,7 +493,8 @@ def _breadcrumb_path(category_id: str, flat: list[dict]) -> list[dict]:
 class CategoryFlatListView(APIView):
     """
     GET /api/v1/catalog/categories
-    Returns flat list of all categories [{id, name, parent_id}].
+    Returns flat list of all categories with computed level and path.
+    Schema: CategoryRef[] — [{id, name, parent_id, level, path}].
     """
 
     def get(self, request):
@@ -472,7 +511,15 @@ class CategoryFlatListView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        return Response(flat, status=status.HTTP_200_OK)
+        try:
+            enriched = _enrich_categories(flat)
+        except ValueError:
+            return Response(
+                {"error": "orphan_node", "message": "category hierarchy is broken"},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        return Response(enriched, status=status.HTTP_200_OK)
 
 
 class CategoryTreeView(APIView):
@@ -497,7 +544,8 @@ class CategoryTreeView(APIView):
             )
 
         try:
-            tree = _build_tree(flat)
+            enriched = _enrich_categories(flat)
+            tree = _build_tree(enriched)
         except ValueError:
             return Response(
                 {"error": "orphan_node", "message": "category hierarchy is broken"},

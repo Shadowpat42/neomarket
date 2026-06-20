@@ -11,6 +11,7 @@ class CartItem(models.Model):
     product_id = models.UUIDField()
     sku_id = models.UUIDField()
     quantity = models.PositiveIntegerField(default=1)
+    unavailable_reason = models.CharField(max_length=50, null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

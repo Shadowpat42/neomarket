@@ -7,9 +7,10 @@ class Order(models.Model):
         ("CREATED", "Создан"),
         ("PAID", "Оплачен"),
         ("ASSEMBLING", "В сборке"),
+        ("DELIVERING", "Доставляется"),
+        ("DELIVERED", "Доставлен"),
         ("CANCELLED", "Отменён"),
         ("CANCEL_PENDING", "Отмена ожидает повтора"),
-        ("DELIVERED", "Доставлен"),
         ("RESERVE_FAILED", "Ошибка резерва"),
     ]
 
@@ -20,11 +21,13 @@ class Order(models.Model):
 
     status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="PAID")
     total_amount = models.PositiveIntegerField(default=0)
+    delivery_address = models.TextField(blank=True, default="")
 
     cancel_reason = models.TextField(blank=True, default="")
     cancelled_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         indexes = [
@@ -34,6 +37,19 @@ class Order(models.Model):
 
     def __str__(self):
         return f"Order {self.id} - {self.status}"
+
+
+class ProcessedProductEvent(models.Model):
+    """
+    Idempotency table for POST /api/v1/events/product.
+    Prevents duplicate processing when B2B retries the same event.
+    """
+
+    idempotency_key = models.UUIDField(primary_key=True)
+    processed_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return str(self.idempotency_key)
 
 
 class OrderItem(models.Model):

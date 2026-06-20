@@ -661,7 +661,8 @@ class CategoryTreeTests(TestCase):
     def test_category_tree_returns_nested_structure(self, mock_b2b_get):
         """
         GET /api/v1/catalog/categories/tree builds a nested tree from B2B flat list.
-        Электроника → Смартфоны → Android
+        Электроника → Смартфоны → Android.
+        Each node has level and path fields (CategoryTreeNode extends CategoryRef).
         """
         mock_b2b_get.return_value = (200, FLAT_CATEGORIES)
 
@@ -671,14 +672,45 @@ class CategoryTreeTests(TestCase):
         # Response is a plain array (no wrapper)
         items = resp.data
         self.assertEqual(len(items), 1, "One root category expected")
+
         root = items[0]
         self.assertEqual(root["id"], ELECTRONICS_ID)
+        self.assertEqual(root["level"], 0)
+        self.assertEqual(root["path"], ["Электроника"])
         self.assertEqual(len(root["children"]), 1)
 
         smartphones = root["children"][0]
         self.assertEqual(smartphones["id"], SMARTPHONES_ID)
+        self.assertEqual(smartphones["level"], 1)
+        self.assertEqual(smartphones["path"], ["Электроника", "Смартфоны"])
         self.assertEqual(len(smartphones["children"]), 1)
-        self.assertEqual(smartphones["children"][0]["id"], ANDROID_ID)
+
+        android = smartphones["children"][0]
+        self.assertEqual(android["id"], ANDROID_ID)
+        self.assertEqual(android["level"], 2)
+        self.assertEqual(android["path"], ["Электроника", "Смартфоны", "Android"])
+
+    @patch("catalog.views._b2b_get")
+    def test_flat_categories_include_level_and_path(self, mock_b2b_get):
+        """
+        GET /api/v1/catalog/categories returns level and path for each node.
+        CategoryRef required: [id, name, level, path].
+        """
+        mock_b2b_get.return_value = (200, FLAT_CATEGORIES)
+
+        resp = self.client.get("/api/v1/catalog/categories")
+        self.assertEqual(resp.status_code, 200)
+
+        by_id = {c["id"]: c for c in resp.data}
+
+        self.assertEqual(by_id[ELECTRONICS_ID]["level"], 0)
+        self.assertEqual(by_id[ELECTRONICS_ID]["path"], ["Электроника"])
+
+        self.assertEqual(by_id[SMARTPHONES_ID]["level"], 1)
+        self.assertEqual(by_id[SMARTPHONES_ID]["path"], ["Электроника", "Смартфоны"])
+
+        self.assertEqual(by_id[ANDROID_ID]["level"], 2)
+        self.assertEqual(by_id[ANDROID_ID]["path"], ["Электроника", "Смартфоны", "Android"])
 
     @patch("catalog.views._b2b_get")
     def test_unknown_category_returns_404(self, mock_b2b_get):

@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
@@ -13,8 +14,17 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from cart.models import CartItem
-from .models import Order, OrderItem
-from .serializers import CheckoutSerializer, OrderSerializer
+from .models import Order, OrderItem, ProcessedProductEvent
+from .serializers import (
+    CheckoutSerializer,
+    OrderSerializer,
+    OrderListSerializer,
+    OrderDetailSerializer,
+)
+
+logger = logging.getLogger(__name__)
+
+B2B_TO_B2C_KEY = os.getenv("B2B_SERVICE_KEY", "b2b_service_key")
 
 
 B2B_BASE_URL = os.getenv("B2B_URL", "http://127.0.0.1:8001")
@@ -162,6 +172,59 @@ def b2b_unreserve(order):
         return exc.code, body
 
 
+def b2b_fulfill(order):
+    """
+    Call B2B POST /api/v1/inventory/fulfill to write off reserved stock.
+    B2B is idempotent by order_id — safe to call multiple times.
+    """
+    url = f"{B2B_BASE_URL}/api/v1/inventory/fulfill"
+    body = {
+        "order_id": str(order.id),
+        "items": [
+            {"sku_id": str(item.sku_id), "quantity": item.quantity}
+            for item in order.items.all()
+        ],
+    }
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = urllib_request.Request(
+        url, data=data, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Service-Key": B2C_SERVICE_KEY,
+        },
+    )
+    opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        try:
+            body_data = json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            body_data = {}
+        return exc.code, body_data
+
+
+def deliver_order(order):
+    """
+    Transition order to DELIVERED and synchronously call B2B fulfill.
+    Fire-and-forget on failure: order stays DELIVERED, error is logged.
+    Reserved_quantity will be corrected when fulfill is retried.
+
+    ADR (B2C-13): synchronous best-effort on first iteration.
+    """
+    order.status = "DELIVERED"
+    order.save(update_fields=["status", "updated_at"])
+    try:
+        status_code, _ = b2b_fulfill(order)
+        if status_code != 200:
+            logger.error(
+                "Fulfill returned non-200 for order %s: status=%s", order.id, status_code
+            )
+    except Exception as exc:
+        logger.exception("Fulfill failed for order %s: %s", order.id, exc)
+
+
 def build_order_items_from_cart(cart_items, products_data):
     products = products_data.get("items", []) if isinstance(products_data, dict) else products_data
     products_by_id = {str(product.get("id")): product for product in products}
@@ -221,7 +284,42 @@ def build_order_items_from_cart(cart_items, products_data):
     return order_items, failed_items
 
 
-class CheckoutView(APIView):
+class OrdersView(APIView):
+    """
+    GET  /api/v1/orders — list own orders (paginated, optional status filter)
+    POST /api/v1/orders — checkout (create order)
+    """
+
+    def get(self, request):
+        user_id = get_user_id_from_request(request)
+        if not user_id:
+            return error("UNAUTHORIZED", "Требуется авторизация", status.HTTP_401_UNAUTHORIZED)
+
+        qs = Order.objects.filter(user_id=user_id).order_by("-created_at")
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        try:
+            limit = max(1, min(100, int(request.query_params.get("limit", 20))))
+            offset = max(0, int(request.query_params.get("offset", 0)))
+        except (TypeError, ValueError):
+            limit, offset = 20, 0
+
+        total = qs.count()
+        page = list(qs[offset: offset + limit].prefetch_related("items"))
+
+        return Response(
+            {
+                "items": OrderListSerializer(page, many=True).data,
+                "total_count": total,
+                "limit": limit,
+                "offset": offset,
+            },
+            status=status.HTTP_200_OK,
+        )
+
     def post(self, request):
         user_id = get_user_id_from_request(request)
 
@@ -428,3 +526,66 @@ class CancelOrderView(APIView):
                 OrderSerializer(order).data,
                 status=status.HTTP_202_ACCEPTED,
             )
+
+
+class OrderDetailView(APIView):
+    """
+    GET /api/v1/orders/{id} — order details with fixed prices.
+    IDOR prevention: other user's order → 404 (never 403).
+    user_id is extracted exclusively from JWT/X-User-Id, never from query.
+    """
+
+    def get(self, request, order_id):
+        user_id = get_user_id_from_request(request)
+        if not user_id:
+            return error("UNAUTHORIZED", "Требуется авторизация", status.HTTP_401_UNAUTHORIZED)
+
+        order = Order.objects.prefetch_related("items").filter(
+            id=order_id,
+            user_id=user_id,
+        ).first()
+
+        if not order:
+            return error("ORDER_NOT_FOUND", "Заказ не найден", status.HTTP_404_NOT_FOUND)
+
+        return Response(OrderDetailSerializer(order).data, status=status.HTTP_200_OK)
+
+
+class ProductEventView(APIView):
+    """
+    POST /api/v1/events/product
+    Accepts PRODUCT_BLOCKED, PRODUCT_DELETED, SKU_OUT_OF_STOCK events from B2B.
+    Updates cart items as unavailable via batch UPDATE.
+    Orders are NOT touched: prices are fixed, seller must fulfil the order.
+    Idempotent by idempotency_key.
+    """
+
+    def post(self, request):
+        svc_key = request.headers.get("X-Service-Key")
+        if svc_key != B2B_TO_B2C_KEY:
+            return error(
+                "UNAUTHORIZED",
+                "Недопустимый или отсутствующий X-Service-Key",
+                status.HTTP_401_UNAUTHORIZED,
+            )
+
+        idempotency_key = request.data.get("idempotency_key")
+        if not idempotency_key:
+            return error("INVALID_REQUEST", "idempotency_key is required", status.HTTP_400_BAD_REQUEST)
+
+        _, created = ProcessedProductEvent.objects.get_or_create(
+            idempotency_key=idempotency_key,
+        )
+        if not created:
+            return Response({"accepted": True}, status=status.HTTP_200_OK)
+
+        event_type = request.data.get("event")
+        sku_ids = request.data.get("sku_ids") or []
+
+        valid_events = {"PRODUCT_BLOCKED", "PRODUCT_DELETED", "SKU_OUT_OF_STOCK"}
+        if event_type in valid_events and sku_ids:
+            CartItem.objects.filter(sku_id__in=sku_ids).update(
+                unavailable_reason=event_type,
+            )
+
+        return Response({"accepted": True}, status=status.HTTP_200_OK)
