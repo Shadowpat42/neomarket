@@ -9,16 +9,16 @@ from .views import (
 )
 
 urlpatterns = [
-    # US-MOD-02: Get next ticket from queue
+    # US-MOD-02: Claim next ticket from queue
     path(
-        "api/v1/product-moderation/get-next",
+        "api/v1/queue/claim",
         GetNextProductView.as_view(),
-        name="get-next",
+        name="queue-claim",
     ),
 
     # US-MOD-06: Blocking reasons catalogue
     path(
-        "api/v1/product-blocking-reasons",
+        "api/v1/blocking-reasons",
         BlockingReasonsView.as_view(),
         name="blocking-reasons",
     ),

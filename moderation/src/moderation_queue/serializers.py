@@ -31,30 +31,35 @@ class TicketResponseSerializer(serializers.ModelSerializer):
 
 
 class GetNextTicketSerializer(serializers.ModelSerializer):
-    """
-    Response schema for POST /api/v1/product-moderation/get-next.
-    Field names follow the canonical flow (product_moderation_id, date_created, etc.).
-    """
+    """Response schema for POST /api/v1/queue/claim (TicketResponse + snapshots)."""
 
-    product_moderation_id = serializers.UUIDField(source="id", read_only=True)
     blocking_history = serializers.SerializerMethodField()
-    date_created = serializers.DateTimeField(source="created_at", read_only=True)
-    date_updated = serializers.DateTimeField(source="updated_at", read_only=True)
+    assigned_moderator_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Ticket
         fields = [
-            "product_moderation_id",
+            "id",
             "product_id",
             "seller_id",
+            "category_id",
+            "kind",
             "status",
             "queue_priority",
+            "assigned_moderator_id",
+            "claimed_at",
+            "claim_expires_at",
             "json_before",
             "json_after",
             "blocking_history",
-            "date_created",
-            "date_updated",
+            "created_at",
+            "updated_at",
         ]
+
+    def get_assigned_moderator_id(self, obj: Ticket):
+        if obj.assigned_moderator_id is None:
+            return None
+        return obj.assigned_moderator_id
 
     def get_blocking_history(self, obj: Ticket):
         """
@@ -84,8 +89,8 @@ class GetNextTicketSerializer(serializers.ModelSerializer):
 
 
 class BlockingReasonSerializer(serializers.ModelSerializer):
-    """Response schema for GET /api/v1/product-blocking-reasons."""
+    """Response schema for GET /api/v1/blocking-reasons."""
 
     class Meta:
         model = BlockingReason
-        fields = ["id", "title", "hard_block"]
+        fields = ["id", "code", "title", "hard_block", "is_active"]

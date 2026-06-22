@@ -96,7 +96,7 @@ def _terminal_response():
 
 class GetNextProductView(APIView):
     """
-    POST /api/v1/product-moderation/get-next
+    POST /api/v1/queue/claim
 
     Returns the oldest PENDING ticket from the requested queue (or the
     highest-priority non-empty queue) and transitions it to IN_REVIEW.
@@ -123,15 +123,15 @@ class GetNextProductView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        queue_id = request.data.get("queueId")
+        queue_id = request.data.get("queue_priority")
 
-        # ── Validate queueId ──────────────────────────────────────────────────
+        # ── Validate queue_priority ───────────────────────────────────────────
         if queue_id is not None:
             if queue_id not in (1, 2, 3, 4):
                 return Response(
                     {
                         "code": "INVALID_QUEUE",
-                        "message": "queueId must be 1, 2, 3, or 4",
+                        "message": "queue_priority must be 1, 2, 3, or 4",
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
@@ -201,21 +201,25 @@ class GetNextProductView(APIView):
 
 class BlockingReasonsView(APIView):
     """
-    GET /api/v1/product-blocking-reasons
+    GET /api/v1/blocking-reasons
 
-    Returns all active blocking reasons.
-    hard_block=True → HARD_BLOCKED (terminal); False → BLOCKED (seller can re-submit).
-    Inactive reasons (is_active=False) are hidden — they were used historically
-    but are no longer available for new decisions.
+    Returns blocking reasons filtered by query params (OpenAPI defaults is_active=true).
     """
 
     permission_classes = []  # Public endpoint — no auth required
 
     def get(self, request):
-        reasons = (
-            BlockingReason.objects.filter(is_active=True)
-            .order_by("hard_block", "title")
-        )
+        is_active_param = request.query_params.get("is_active", "true")
+        is_active = is_active_param.lower() in ("true", "1", "yes")
+
+        qs = BlockingReason.objects.all()
+        qs = qs.filter(is_active=is_active)
+
+        hard_block = request.query_params.get("hard_block")
+        if hard_block is not None:
+            qs = qs.filter(hard_block=hard_block.lower() in ("true", "1", "yes"))
+
+        reasons = qs.order_by("hard_block", "title")
         return Response(BlockingReasonSerializer(reasons, many=True).data)
 
 
