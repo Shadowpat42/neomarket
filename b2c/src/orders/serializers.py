@@ -24,13 +24,14 @@ class OrderItemSerializer(serializers.ModelSerializer):
 class OrderSerializer(serializers.ModelSerializer):
     """Internal serializer — used by checkout/cancel responses."""
 
+    buyer_id = serializers.UUIDField(source="user_id", read_only=True)
     items = OrderItemSerializer(many=True, read_only=True)
 
     class Meta:
         model = Order
         fields = [
             "id",
-            "user_id",
+            "buyer_id",
             "idempotency_key",
             "status",
             "total_amount",
@@ -58,16 +59,22 @@ class OrderListSerializer(serializers.ModelSerializer):
 class OrderDetailSerializer(serializers.ModelSerializer):
     """Full order with items — GET /api/v1/orders/{id}. Prices from OrderItem, not B2B."""
 
+    buyer_id = serializers.UUIDField(source="user_id", read_only=True)
+    subtotal = serializers.IntegerField(source="total_amount", read_only=True)
+    total = serializers.IntegerField(source="total_amount", read_only=True)
+    address = serializers.CharField(source="delivery_address", read_only=True)
     items = OrderItemSerializer(many=True, read_only=True)
 
     class Meta:
         model = Order
         fields = [
             "id",
+            "buyer_id",
             "status",
             "items",
-            "total_amount",
-            "delivery_address",
+            "subtotal",
+            "total",
+            "address",
             "created_at",
             "updated_at",
         ]
