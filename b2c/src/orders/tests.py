@@ -440,8 +440,19 @@ class OrderDetailTests(TestCase):
         item = resp.data["items"][0]
         self.assertEqual(item["unit_price"], 6_499_500)
         self.assertEqual(item["line_total"], 12_999_000)
-        self.assertEqual(item["product_title"], "iPhone 15 Pro Max")
-        self.assertEqual(item["sku_name"], "256GB Black")
+        self.assertEqual(item["name"], "iPhone 15 Pro Max — 256GB Black")
+        self.assertNotIn("product_title", item)
+        self.assertNotIn("sku_name", item)
+
+        address = resp.data["address"]
+        self.assertIsInstance(address, dict)
+        self.assertIn("id", address)
+        self.assertIn("country", address)
+        self.assertIn("city", address)
+        self.assertIn("street", address)
+        self.assertIn("building", address)
+        self.assertIn("created_at", address)
+        self.assertEqual(address["street"], "г. Екатеринбург, ул. Мира 19, кв. 42")
 
     def test_other_user_order_returns_404_not_403(self):
         """

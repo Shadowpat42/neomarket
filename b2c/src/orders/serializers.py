@@ -7,18 +7,24 @@ class CheckoutSerializer(serializers.Serializer):
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
+    name = serializers.SerializerMethodField()
+
     class Meta:
         model = OrderItem
         fields = [
             "id",
             "product_id",
             "sku_id",
-            "product_title",
-            "sku_name",
+            "name",
             "quantity",
             "unit_price",
             "line_total",
         ]
+
+    def get_name(self, obj: OrderItem) -> str:
+        if obj.sku_name:
+            return f"{obj.product_title} — {obj.sku_name}"
+        return obj.product_title
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -62,7 +68,7 @@ class OrderDetailSerializer(serializers.ModelSerializer):
     buyer_id = serializers.UUIDField(source="user_id", read_only=True)
     subtotal = serializers.IntegerField(source="total_amount", read_only=True)
     total = serializers.IntegerField(source="total_amount", read_only=True)
-    address = serializers.CharField(source="delivery_address", read_only=True)
+    address = serializers.SerializerMethodField()
     items = OrderItemSerializer(many=True, read_only=True)
 
     class Meta:
@@ -78,3 +84,18 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_address(self, obj: Order):
+        snapshot = getattr(obj, "address_snapshot", None)
+        if isinstance(snapshot, dict) and snapshot:
+            return snapshot
+
+        return {
+            "id": obj.id,
+            "country": "RU",
+            "city": "",
+            "street": obj.delivery_address or "",
+            "building": "",
+            "comment": obj.delivery_address or "",
+            "created_at": obj.created_at,
+        }
