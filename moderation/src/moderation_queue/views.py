@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import timedelta
 from urllib import request as urlrequest
 
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -20,7 +22,11 @@ from .models import (
     TicketKind,
     TicketStatus,
 )
-from .serializers import TicketResponseSerializer
+from .serializers import (
+    BlockingReasonSerializer,
+    GetNextTicketSerializer,
+    TicketResponseSerializer,
+)
 
 
 # ── Helpers (module-level → mockable in tests) ────────────────────────────────
@@ -86,11 +92,131 @@ def _terminal_response():
     )
 
 
-# ── Skeleton view kept for backwards-compat ───────────────────────────────────
+# ── US-MOD-02: Get next ticket from queue ─────────────────────────────────────
 
 class GetNextProductView(APIView):
+    """
+    POST /api/v1/product-moderation/get-next
+
+    Returns the oldest PENDING ticket from the requested queue (or the
+    highest-priority non-empty queue) and transitions it to IN_REVIEW.
+
+    Concurrency: SELECT FOR UPDATE SKIP LOCKED — two moderators hitting
+    the endpoint simultaneously will each receive a different ticket.
+
+    ADR — race-condition protection:
+      Option A) SELECT FOR UPDATE SKIP LOCKED (chosen).
+        + No extra dependencies; atomically transitions the row.
+        + SKIP LOCKED means concurrent transactions never block each other.
+        - Requires a real relational DB (PostgreSQL in production).
+          SQLite emulates it acceptably for tests.
+      Option B) Redis distributed lock.
+        + Works across DB engines.
+        - Adds Redis as a hard dependency; failure of Redis = no moderators.
+      Option C) Separate queue microservice (e.g. Celery task queue).
+        - Overkill for this workload; high operational overhead.
+      Chosen: A — simplest, zero extra dependencies, works in existing DB.
+      Timeout handling: a scheduled task resets tickets with
+      status=IN_REVIEW older than CLAIM_TIMEOUT_MINUTES back to PENDING.
+    """
+
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
-        return Response({"message": "Get next product for moderation skeleton"})
+        queue_id = request.data.get("queueId")
+
+        # ── Validate queueId ──────────────────────────────────────────────────
+        if queue_id is not None:
+            if queue_id not in (1, 2, 3, 4):
+                return Response(
+                    {
+                        "code": "INVALID_QUEUE",
+                        "message": "queueId must be 1, 2, 3, or 4",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            queues_to_try = [queue_id]
+        else:
+            queues_to_try = [1, 2, 3, 4]
+
+        # ── Guard: moderator already has an IN_REVIEW ticket ─────────────────
+        existing = Ticket.objects.filter(
+            assigned_moderator=request.user,
+            status=TicketStatus.IN_REVIEW,
+        ).first()
+        if existing:
+            return Response(
+                {
+                    "code": "ALREADY_IN_REVIEW",
+                    "message": "You already have a ticket in review",
+                    "ticket_id": str(existing.id),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # ── Claim oldest PENDING ticket (FOR UPDATE SKIP LOCKED) ─────────────
+        timeout_minutes = getattr(settings, "CLAIM_TIMEOUT_MINUTES", 30)
+        ticket = None
+
+        with transaction.atomic():
+            for q in queues_to_try:
+                ticket = (
+                    Ticket.objects.filter(
+                        status=TicketStatus.PENDING,
+                        queue_priority=q,
+                    )
+                    .order_by("created_at")
+                    .select_for_update(skip_locked=True)
+                    .first()
+                )
+                if ticket:
+                    now = timezone.now()
+                    ticket.status = TicketStatus.IN_REVIEW
+                    ticket.assigned_moderator = request.user
+                    ticket.claimed_at = now
+                    ticket.claim_expires_at = now + timedelta(minutes=timeout_minutes)
+                    ticket.save(
+                        update_fields=[
+                            "status",
+                            "assigned_moderator_id",
+                            "claimed_at",
+                            "claim_expires_at",
+                        ]
+                    )
+                    break
+
+        if ticket is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        # Re-fetch with related data so serializer can access field_reports
+        ticket = (
+            Ticket.objects.select_related("blocking_reason")
+            .prefetch_related("field_reports")
+            .get(pk=ticket.pk)
+        )
+        return Response(GetNextTicketSerializer(ticket).data, status=status.HTTP_200_OK)
+
+
+# ── US-MOD-06: Blocking reasons catalogue ─────────────────────────────────────
+
+class BlockingReasonsView(APIView):
+    """
+    GET /api/v1/product-blocking-reasons
+
+    Returns all active blocking reasons.
+    hard_block=True → HARD_BLOCKED (terminal); False → BLOCKED (seller can re-submit).
+    Inactive reasons (is_active=False) are hidden — they were used historically
+    but are no longer available for new decisions.
+    """
+
+    permission_classes = []  # Public endpoint — no auth required
+
+    def get(self, request):
+        reasons = (
+            BlockingReason.objects.filter(is_active=True)
+            .order_by("hard_block", "title")
+        )
+        return Response(BlockingReasonSerializer(reasons, many=True).data)
 
 
 # ── US-MOD-03: Approve ticket ─────────────────────────────────────────────────

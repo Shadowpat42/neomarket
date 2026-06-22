@@ -120,6 +120,11 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# ── Moderation queue ──────────────────────────────────────────────────────────
+# Timeout in minutes after which an IN_REVIEW ticket is returned to PENDING.
+# A scheduled task (cron/celery) should implement the actual reset.
+CLAIM_TIMEOUT_MINUTES = int(os.getenv("CLAIM_TIMEOUT_MINUTES", "30"))
+
 # ── REST Framework ────────────────────────────────────────────────────────────
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [

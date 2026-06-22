@@ -27,7 +27,7 @@ from rest_framework import status
 
 from .serializers import ProductCardSerializer, SimilarProductSerializer
 
-_B2B_CATEGORIES_URL = "/api/v1/public/categories"
+_B2B_CATEGORIES_URL = "/api/v1/categories"
 
 
 _B2B_BASE_URL = os.getenv("B2B_URL", "http://127.0.0.1:8001")

@@ -419,7 +419,7 @@ class OrderDetailTests(TestCase):
     def test_order_detail_shows_fixed_prices(self):
         """
         Prices come from OrderItem (unit_price), not from current B2B SKU.
-        Even if seller changed price after purchase, the order still shows the original price.
+        Response uses OpenAPI field names: buyer_id, subtotal, total, address.
         """
         order = _make_order()
         _make_item(order)
@@ -427,9 +427,15 @@ class OrderDetailTests(TestCase):
         resp = self.client.get(f"/api/v1/orders/{order.id}")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["id"], str(order.id))
-        self.assertEqual(resp.data["total_amount"], 12_999_000)
-        self.assertIn("delivery_address", resp.data)
+        # OpenAPI required fields
+        self.assertEqual(resp.data["buyer_id"], USER_ID)
+        self.assertEqual(resp.data["subtotal"], 12_999_000)
+        self.assertEqual(resp.data["total"], 12_999_000)
+        self.assertIn("address", resp.data)
         self.assertIn("items", resp.data)
+        # Old names must NOT appear in the response
+        self.assertNotIn("total_amount", resp.data)
+        self.assertNotIn("delivery_address", resp.data)
 
         item = resp.data["items"][0]
         self.assertEqual(item["unit_price"], 6_499_500)
